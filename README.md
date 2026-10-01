@@ -166,6 +166,19 @@ BAZIS_STORAGE_FILE_UPLOAD = 'storages.backends.s3boto3.S3Boto3Storage'
 BAZIS_STORAGE_FILE_UPLOAD = 'path.to.your.CustomStorage'
 ```
 
+### Size Limit
+
+`BAZIS_FILE_UPLOAD_MAX_SIZE` (bytes, `0` — no limit, the default) rejects larger files with
+`413` and the error code `ERR_FILE_TOO_LARGE`. The check runs after the request body is
+received, so also limit the request size on the reverse proxy (e.g. `client_max_body_size`).
+
+### Access Control
+
+`FileUploadRouteSet` does not check who calls it: anyone who can reach the API can upload,
+list, change and delete files. In production, register a subclass that requires a user
+(e.g. with `UserRequiredRouteBase` of bazis-users) or permissions (bazis-permit) instead
+of the bundled router.
+
 ## Usage
 
 ### Creating a File Model
