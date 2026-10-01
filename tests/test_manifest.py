@@ -12,16 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from django.utils.translation import gettext_lazy as _
+from bazis.contrib.uploadable.checks import check_routes_bundled
+from bazis.core.introspect import validate_manifest
 
-from bazis.core.apps import BaseConfig
+
+def test_manifest_is_valid():
+    assert validate_manifest('bazis.contrib.uploadable') == []
 
 
-class UploadableConfig(BaseConfig):
-    name = 'bazis.contrib.uploadable'
-    verbose_name = _('Uploadable files')
-
-    def ready(self):
-        super().ready()
-
-        from . import checks  # noqa: F401  registers the system checks
+def test_bundled_route_without_access_control(sample_app):
+    # the sample project registers bazis.contrib.uploadable.router
+    assert [it.id for it in check_routes_bundled(None)] == ['uploadable.W001']

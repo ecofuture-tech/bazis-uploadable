@@ -1,0 +1,46 @@
+# What the package is for and how to use it, for tools and AI agents (see AGENTS.md).
+# `import` paths and `check` ids are verified by tests/test_manifest.py.
+
+[package]
+name = "bazis-uploadable"
+summary = "uploaded files: the FileUpload model and a multipart upload route"
+solves = [
+    "upload files through the API (multipart form data)",
+    "store files in a configurable Django storage (file system, S3...)",
+    "reference uploaded files from other models",
+]
+requires = ["bazis"]
+pairs_well = ["bazis-users", "bazis-permit"]
+
+[[extension_points]]
+name = "FileUploadRouteSet"
+import = "bazis.contrib.uploadable.routes.FileUploadRouteSet"
+use_when = "the base of the project's upload route (subclass it with access control)"
+
+[[extension_points]]
+name = "FileUploadAbstract"
+import = "bazis.contrib.uploadable.models_abstract.FileUploadAbstract"
+use_when = "a model of an uploaded file (file, name, extension, size)"
+
+[[extension_points]]
+name = "FileUpload"
+import = "bazis.contrib.uploadable.models.FileUpload"
+use_when = "the uploaded file referenced by other models (ForeignKey to 'uploadable.FileUpload')"
+
+[[extension_points]]
+name = "get_file_upload_storage"
+import = "bazis.contrib.uploadable.models_abstract.get_file_upload_storage"
+use_when = "the storage of the uploaded files (BAZIS_STORAGE_FILE_UPLOAD)"
+
+[[pitfalls]]
+text = "the bundled router (FileUploadRouteSet) has no access control: anyone can upload, list, change and delete files"
+check = "uploadable.W001"
+
+[[pitfalls]]
+text = "BAZIS_FILE_UPLOAD_MAX_SIZE is checked after the whole body is received: also limit the body size on the reverse proxy"
+
+[[pitfalls]]
+text = "BAZIS_STORAGE_FILE_UPLOAD is read once, when the models are loaded"
+
+[[pitfalls]]
+text = "deleting a FileUpload object does not delete the file from the storage"
