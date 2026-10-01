@@ -73,3 +73,29 @@ def test_uploadable(sample_app, temp_file):
     assert response.status_code == 200
     assert 'data' in response.json()
     assert all(x['type'] == 'uploadable.file_upload' for x in response.json()['data'])
+
+
+@override_settings(MEDIA_ROOT='/tmp')
+@pytest.mark.django_db(transaction=True)
+def test_uploadable_max_size(sample_app, settings):
+    settings.BAZIS_FILE_UPLOAD_MAX_SIZE = 10
+    model = apps.get_model('uploadable.FileUpload')
+
+    response = get_api_client(sample_app).post(
+        '/api/v1/uploadable/file_upload/',
+        data={'name': 'large.txt'},
+        files={'file': b'x' * 11},
+    )
+    assert response.status_code == 413
+    assert response.json()['errors'][0]['code'] == 'ERR_FILE_TOO_LARGE'
+    assert not model.objects.exists()
+
+    response = get_api_client(sample_app).post(
+        '/api/v1/uploadable/file_upload/',
+        data={'name': 'small.txt'},
+        files={'file': b'x' * 10},
+    )
+    assert response.status_code == 201
+    file_instance = model.objects.get()
+    assert file_instance.size == 10
+    assert file_instance.file.storage.location == '/tmp'
