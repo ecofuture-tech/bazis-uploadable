@@ -15,9 +15,12 @@
 from functools import partial
 
 from django.apps import apps
+from django.conf import settings
+from django.utils.translation import gettext as _
 
 from fastapi import Form, Request
 
+from bazis.core.errors import JsonApiBazisError, JsonApiBazisException
 from bazis.core.routes_abstract.initial import http_post
 from bazis.core.routes_abstract.jsonapi import (
     JsonapiRouteBase,
@@ -62,6 +65,19 @@ class FileUploadRouteSet(JsonapiRouteBase):
         id: str | None = Form(None),
         **kwargs,
     ):
+        max_size = settings.BAZIS_FILE_UPLOAD_MAX_SIZE
+        if max_size and (file.size or 0) > max_size:
+            raise JsonApiBazisException(
+                JsonApiBazisError(
+                    detail=_('The file is larger than %(size)s bytes') % {'size': max_size},
+                    loc=('body', 'file'),
+                    code='ERR_FILE_TOO_LARGE',
+                    title=_('File too large'),
+                    status=413,
+                ),
+                status=413,
+            )
+
         if not isinstance(file, UploadFileDjango):
             file.__class__ = UploadFileDjango
 
