@@ -31,20 +31,29 @@ else:
     FileStorage = FileSystemStorage
 
 
+def get_file_upload_storage():
+    """
+    Returns the storage of the uploaded files: the class from BAZIS_STORAGE_FILE_UPLOAD,
+    or the file system storage in MEDIA_ROOT.
+    """
+    return FileStorage()
+
+
 class FileUploadAbstract(JsonApiMixin):
-    file = models.FileField(_('File'), upload_to=get_file_path, max_length=255)
+    file = models.FileField(
+        _('File'), upload_to=get_file_path, max_length=255, storage=get_file_upload_storage
+    )
     name = models.CharField(_('Name'), max_length=255, blank=True, null=True)
     extension = models.CharField(_('Extension'), max_length=50, blank=True, null=True)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._meta.get_field('file').storage = FileStorage()
-
     @cached_property
     def size(self) -> int | None:
+        """
+        The size of the stored file, 0 if the file is missing from the storage.
+        """
         try:
             return self.file.size
-        except FileNotFoundError:
+        except OSError:
             return 0
 
     def __str__(self):

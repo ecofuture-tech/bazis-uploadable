@@ -21,6 +21,9 @@ from bazis.core.utils.schemas import BazisSettings
 
 class Settings(BazisSettings):
     BAZIS_STORAGE_FILE_UPLOAD: str = Field('', title=_('Uploadable files storage engine'))
+    BAZIS_FILE_UPLOAD_MAX_SIZE: int = Field(
+        0, title=_('Maximum size of an uploaded file in bytes (0 - no limit)'), ge=0
+    )
 
 
 settings = Settings()
