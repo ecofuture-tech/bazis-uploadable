@@ -33,13 +33,15 @@ classifiers = [
     "Framework :: FastAPI",
 ]
 dependencies = [
-    "bazis>=2.4.0",
+    "bazis>=2.7.0",
     "bazis-author>=2.4.0",
     "python-multipart>=0.0.18",
 ]
 
 [project.optional-dependencies]
 test = [
+    # the sample registers the token endpoint of bazis-users (bazis.contrib.users.token)
+    "bazis-users>=2.6.1",
     "bazis-test-utils>=2.3.0",
     # the S3 storage of the package is tested against the real django-storages
     "django-storages[s3]>=1.14",
