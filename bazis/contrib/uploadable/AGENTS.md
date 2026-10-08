@@ -37,7 +37,10 @@ without a token):
 `FileUploadRouteSet` is the default route of `uploadable.FileUpload`: its classmethod
 `restrict_queryset` (the author filter; none for an anonymous user, the authenticated user
 of the request `UserMixin.CTX_USER_REQUEST` when the caller passes no user) is also what
-the other routes may link and include (the core, Bazis 2.7):
+the other routes may link and include (the core, Bazis 2.7). `CTX_USER_REQUEST` is set by
+the routes of bazis-users (`UserRouteBase`) and its Django middleware: a route without a
+user (a plain `JsonapiRouteBase`) does not set it, so there a logged-in user is anonymous
+for the files, cannot link even his own files (403) and does not see them in `included`.
 
 - a relationship of another model to a file of another user fails with 403
   `ERR_RELATION_ACCESS` (create, update, the relationships endpoints); an unchanged link
@@ -57,6 +60,8 @@ class FileRouteSet(FileUploadRouteSet):
 
     @classmethod
     def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
+        # the same user for the own files and the shared ones
+        user = user or UserMixin.CTX_USER_REQUEST.get()
         own = super().restrict_queryset(qs, access_action, user=user, **kwargs)
         if user is None or user.is_anonymous:
             return own

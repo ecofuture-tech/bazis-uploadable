@@ -238,6 +238,8 @@ def test_a_subclass_widens_the_visible_files(sample_app, media, monkeypatch):
     from django.db.models import Q
 
     from bazis.contrib.uploadable.routes import FileUploadRouteSet
+    from bazis.contrib.users.models_abstract import UserMixin
+    from bazis.core.schemas import CrudAccessAction
 
     FileUpload = apps.get_model('uploadable.FileUpload')  # noqa: N806
     Note = apps.get_model('notes.Note')  # noqa: N806
@@ -249,6 +251,7 @@ def test_a_subclass_widens_the_visible_files(sample_app, media, monkeypatch):
 
         @classmethod
         def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
+            user = user or UserMixin.CTX_USER_REQUEST.get()
             own = super().restrict_queryset(qs, access_action, user=user, **kwargs)
             if user is None or user.is_anonymous:
                 return own
@@ -268,6 +271,16 @@ def test_a_subclass_widens_the_visible_files(sample_app, media, monkeypatch):
     response = bob_client.post(NOTES, json_data=note_body('Steal', private))
     assert response.status_code == 403
     assert response.json()['errors'][0]['code'] == 'ERR_RELATION_ACCESS'
+
+    # called without a user, the own files and the shared ones are of the request user
+    own = upload(bob_client, 'own.txt').json()['data']['id']
+    files = FileUpload.objects.all()
+    token = UserMixin.CTX_USER_REQUEST.set(bob)
+    try:
+        visible = SharedFileRouteSet.restrict_queryset(files, CrudAccessAction.VIEW)
+        assert {str(it.pk) for it in visible} == {str(attached), str(own)}
+    finally:
+        UserMixin.CTX_USER_REQUEST.reset(token)
 
 
 @pytest.mark.django_db(transaction=True)
