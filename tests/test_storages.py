@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from django.core.files.base import ContentFile
 from django.core.files.storage import FileSystemStorage
 
 import pytest
@@ -88,3 +89,29 @@ def test_only_s3_storages_get_the_safe_serving():
     assert storage_class.__name__ == 'ProjectStorage'
     assert serving_storage_class(storage_class) is storage_class
     assert serving_storage_class(FileSystemStorage) is FileSystemStorage
+
+
+@pytest.mark.parametrize(
+    'name, declared, content_type, disposition',
+    [
+        # the type the client declared is not stored
+        ('files/a.html', 'text/html', 'text/html', 'attachment'),
+        ('files/a.svg', 'image/svg+xml', 'image/svg+xml', 'attachment'),
+        ('files/a.png', 'text/html', 'image/png', None),
+    ],
+)
+def test_real_s3_storage_writes_active_content_as_downloads(
+    settings, name, declared, content_type, disposition
+):
+    s3 = pytest.importorskip('storages.backends.s3')
+    settings.AWS_STORAGE_BUCKET_NAME = 'bucket'
+    settings.AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=60'}
+    storage = serving_storage_class(s3.S3Storage)()
+    content = ContentFile(b'<svg onload="alert(1)"/>', name=name)
+    content.content_type = declared
+
+    params = storage._get_write_parameters(name, content)
+
+    assert params['ContentType'] == content_type
+    assert params.get('ContentDisposition') == disposition
+    assert params['CacheControl'] == 'max-age=60'

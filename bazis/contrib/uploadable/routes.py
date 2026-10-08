@@ -39,7 +39,8 @@ class FileUploadRouteSet(AuthorRequiredRouteBase):
     The uploaded files of the user: a user who is logged in uploads a file (he becomes its
     `author`), lists and reads his own files. No file is changed or deleted through the
     route. A file that another user uploaded is read through the resource that references
-    it (`include`), or through a subclass that widens `get_queryset` (see AGENTS.md).
+    it (`include`); that route set must refuse files the user did not upload, the core
+    does not check the targets of relationships yet (see AGENTS.md).
     """
 
     model = apps.get_model('uploadable.FileUpload')

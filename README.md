@@ -180,11 +180,16 @@ received, so also limit the request size on the reverse proxy (e.g. `client_max_
 
 `FileUploadRouteSet` requires a logged-in user (bazis-users): the user who uploads a file is
 its `author`, and the list and retrieve show a user only his own files. Files are not
-changed or deleted through the API. A file uploaded by another user (e.g. the attachment of
-a shared object) is read through the object that references it, with
-`?include=<field>`, or through a subclass of `FileUploadRouteSet` that widens
-`get_queryset` (see `bazis/contrib/uploadable/AGENTS.md`). Files without an author (uploaded
-before 2.5) are not shown to anyone.
+changed or deleted through the API. Files without an author (uploaded before 2.5) are not
+shown to anyone.
+
+**Limitation:** the Bazis core does not yet check that a relationship targets an object the
+user may see. A user who sets `relationships.<field> = {"id": <file id>}` on his own object
+links a file of another user and reads it with `?include=<field>`. Until the core version
+with these checks, the route set of every model that references uploaded files must refuse
+files the user did not upload (on create, on update and on the relationships endpoints).
+The sample route set `notes.routes.NoteRouteSet` shows how; see
+`bazis/contrib/uploadable/AGENTS.md`.
 
 ### Serving Uploaded Files
 

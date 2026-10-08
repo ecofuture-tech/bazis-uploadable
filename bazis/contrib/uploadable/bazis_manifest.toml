@@ -39,7 +39,10 @@ import = "bazis.contrib.uploadable.models_abstract.get_file_upload_storage"
 use_when = "the storage of the uploaded files (BAZIS_STORAGE_FILE_UPLOAD)"
 
 [[pitfalls]]
-text = "FileUploadRouteSet shows a user only the files he uploaded: read the file of another user through the resource that references it (include) or widen get_queryset in a subclass"
+text = "FileUploadRouteSet shows a user only the files he uploaded; the files of others are read through the object that references them (include)"
+
+[[pitfalls]]
+text = "the core does not yet check that a relationship targets an object the user may see: a route set of a model that references uploaded files must refuse files the user did not upload (hook_before_create, hook_after_update, hook_before_relationships_change), or a user links another user's file by its id and reads it through include"
 
 [[pitfalls]]
 text = "the media URL of a file is readable by anyone who has it; serve MEDIA_ROOT from a separate origin with Content-Disposition: attachment (except raster images) and X-Content-Type-Options: nosniff"

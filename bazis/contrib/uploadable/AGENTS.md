@@ -34,11 +34,35 @@ without a token):
 - no update, no delete (405) and no relationships endpoints: a file referenced by the
   objects of other users stays as it was.
 
-Files that other users uploaded (an attachment of a shared object) are read through the
-resource that references them: `GET <object>/{id}/?include=<field>` returns the file
-(`file` URL, `name`, `extension`, `size`) in `included`, under the access control of that
-resource. Where a client reads files by their ids, register a subclass that widens
-`get_queryset` with the files it may see, e.g. those of the objects it may read:
+Files that other users uploaded (an attachment of a shared object) are not readable
+through `FileUploadRouteSet`. A client reads them through the object that references them
+(`GET <object>/{id}/?include=<field>`) or through a subclass that widens `get_queryset`.
+Neither is safe by itself: **the core does not yet check that a relationship targets an
+object the user may see**, so a user who sets `relationships.<field> = {"id": <file id>}`
+on his own object links a file of another user by its id and reads it through `include`.
+Until the core version with these checks, every route set of a model that references
+uploaded files verifies the files a user links: on create, on update when the file
+changes, and on the relationships endpoints (or excludes them), e.g. (the sample route
+set `notes.routes.NoteRouteSet`, tested in `tests/test_uploadable.py`):
+
+```python
+class NoteRouteSet(UserRequiredRouteBase):
+    def check_attachment(self, file_id):  # 403 unless the user uploaded the file
+        if file_id is not None and not FileUpload.objects.filter(
+            pk=file_id, author=self.inject.user
+        ).exists():
+            raise JsonApiBazisException(JsonApiBazisError(..., status=403), status=403)
+
+    def hook_before_create(self, item):
+        self.check_attachment(item.attachment_id)
+        super().hook_before_create(item)
+    # hook_before_update keeps item.attachment_id, hook_after_update checks a new one;
+    # hook_before_relationships_change checks the id of `attachment`
+```
+
+A subclass of `FileUploadRouteSet` that lets a client read files by their ids widens
+`get_queryset` only with the files of objects the user may read, and only once linking is
+checked as above. This example moves to `restrict_queryset` once the core supports it:
 
 ```python
 class FileRouteSet(FileUploadRouteSet):

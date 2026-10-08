@@ -123,15 +123,28 @@ def test_client_does_not_choose_the_id(sample_app, media):
     assert not apps.get_model('uploadable.FileUpload').objects.filter(pk=987654).exists()
 
 
-@pytest.mark.django_db(transaction=True)
-def test_referenced_file_is_read_through_the_referencing_resource(sample_app, media):
-    author, reader = make_user('author'), make_user('reader')
-    item = upload(client_of(sample_app, author), 'plan.txt').json()['data']['id']
-    note = apps.get_model('notes.Note').objects.create(title='Plan', attachment_id=item)
+def note_body(title, file_id=None, note_id=None):
+    data = {'type': 'notes.note', 'attributes': {'title': title}}
+    if note_id is not None:
+        data['id'] = str(note_id)
+    if file_id is not None:
+        data['relationships'] = {
+            'attachment': {'data': {'type': 'uploadable.file_upload', 'id': str(file_id)}}
+        }
+    return {'data': data}
 
-    client = client_of(sample_app, reader)
-    assert client.get(f'{FILES}{item}/').status_code == 404
-    response = client.get(f'{NOTES}{note.pk}/', params={'include': 'attachment'})
+
+@pytest.mark.django_db(transaction=True)
+def test_attached_file_is_read_through_the_referencing_resource(sample_app, media):
+    alice, bob = make_user('alice'), make_user('bob')
+    alice_client, bob_client = client_of(sample_app, alice), client_of(sample_app, bob)
+    item = upload(alice_client, 'plan.txt').json()['data']['id']
+    response = alice_client.post(NOTES, json_data=note_body('Plan', item))
+    assert response.status_code == 201, response.text
+    note = response.json()['data']['id']
+
+    assert bob_client.get(f'{FILES}{item}/').status_code == 404
+    response = bob_client.get(f'{NOTES}{note}/', params={'include': 'attachment'})
 
     assert response.status_code == 200, response.text
     [included] = response.json()['included']
@@ -139,6 +152,43 @@ def test_referenced_file_is_read_through_the_referencing_resource(sample_app, me
     assert included['attributes']['name'] == 'plan.txt'
     assert included['attributes']['file'].endswith('.txt')
     assert 'author' not in included.get('relationships', {})
+
+    # bob changes the note of alice and keeps her attachment
+    response = bob_client.patch(f'{NOTES}{note}/', json_data=note_body('Plan 2', note_id=note))
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_user_does_not_attach_the_file_of_another_user(sample_app, media):
+    """
+    The core does not check yet that a relationship targets an object the user may see:
+    the route set of the notes refuses a file the user did not upload.
+    """
+    alice, bob = make_user('alice'), make_user('bob')
+    alice_file = upload(client_of(sample_app, alice), 'secret.txt').json()['data']['id']
+    client = client_of(sample_app, bob)
+    bob_file = upload(client, 'own.txt').json()['data']['id']
+    notes = apps.get_model('notes.Note').objects
+
+    response = client.post(NOTES, json_data=note_body('Steal', alice_file))
+    assert response.status_code == 403, response.text
+    assert response.json()['errors'][0]['code'] == 'ERR_ATTACHMENT_NOT_OWN'
+    assert not notes.exists()
+
+    response = client.post(NOTES, json_data=note_body('Own', bob_file))
+    assert response.status_code == 201, response.text
+    note = response.json()['data']['id']
+
+    response = client.patch(f'{NOTES}{note}/', json_data=note_body('Steal', alice_file, note))
+    assert response.status_code == 403, response.text
+    response = client.patch(
+        f'{NOTES}{note}/relationships/attachment/',
+        json_data={'data': {'type': 'uploadable.file_upload', 'id': str(alice_file)}},
+    )
+    assert response.status_code == 403, response.text
+    assert notes.get(pk=note).attachment_id == bob_file
+    included = client.get(f'{NOTES}{note}/', params={'include': 'attachment'}).json()['included']
+    assert [it['id'] for it in included] == [bob_file]
 
 
 @pytest.mark.django_db(transaction=True)

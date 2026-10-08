@@ -20,7 +20,7 @@ from bazis.core.models_abstract import JsonApiMixin
 class Note(JsonApiMixin):
     """
     A model that references an uploaded file: a user who reads a note reads its file with
-    `include=attachment`, whoever uploaded it.
+    `include=attachment`; the route set lets a user attach only a file he uploaded.
     """
 
     title = models.CharField(max_length=255)
