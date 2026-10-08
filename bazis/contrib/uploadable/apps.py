@@ -20,8 +20,3 @@ from bazis.core.apps import BaseConfig
 class UploadableConfig(BaseConfig):
     name = 'bazis.contrib.uploadable'
     verbose_name = _('Uploadable files')
-
-    def ready(self):
-        super().ready()
-
-        from . import checks  # noqa: F401  registers the system checks

@@ -20,26 +20,34 @@ from django.db import models
 from django.utils.functional import cached_property
 from django.utils.translation import gettext_lazy as _
 
-from bazis.core.models_abstract import JsonApiMixin
+from bazis.contrib.author.models_abstract import AuthorMixin
 from bazis.core.utils.imp import import_class
 from bazis.core.utils.orm import get_file_path
 
+from .storages import serving_storage_class
+
 
 if settings.BAZIS_STORAGE_FILE_UPLOAD:
-    FileStorage = import_class(settings.BAZIS_STORAGE_FILE_UPLOAD)
+    FileStorage = serving_storage_class(import_class(settings.BAZIS_STORAGE_FILE_UPLOAD))
 else:
     FileStorage = FileSystemStorage
 
 
 def get_file_upload_storage():
     """
-    Returns the storage of the uploaded files: the class from BAZIS_STORAGE_FILE_UPLOAD,
-    or the file system storage in MEDIA_ROOT.
+    Returns the storage of the uploaded files: the class from BAZIS_STORAGE_FILE_UPLOAD
+    (an S3 storage of django-storages serves the files safely, see `storages`), or the
+    file system storage in MEDIA_ROOT.
     """
     return FileStorage()
 
 
-class FileUploadAbstract(JsonApiMixin):
+class FileUploadAbstract(AuthorMixin):
+    """
+    An uploaded file. Its `author` (bazis-author) is the user who uploaded it: the route set
+    `FileUploadRouteSet` shows a user only his files.
+    """
+
     file = models.FileField(
         _('File'), upload_to=get_file_path, max_length=255, storage=get_file_upload_storage
     )

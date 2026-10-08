@@ -34,12 +34,15 @@ classifiers = [
 ]
 dependencies = [
     "bazis>=2.4.0",
+    "bazis-author>=2.4.0",
     "python-multipart>=0.0.18",
 ]
 
 [project.optional-dependencies]
 test = [
-    "bazis-test-utils>=2.3.0"
+    "bazis-test-utils>=2.3.0",
+    # the S3 storage of the package is tested against the real django-storages
+    "django-storages[s3]>=1.14",
 ]
 dev = [
     "ruff"

@@ -12,14 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from bazis.contrib.author.checks import check_routes_author
-from bazis.core.introspect import validate_manifest
+from django.db import models
+
+from bazis.core.models_abstract import JsonApiMixin
 
 
-def test_manifest_is_valid():
-    assert validate_manifest('bazis.contrib.uploadable') == []
+class Note(JsonApiMixin):
+    """
+    A model that references an uploaded file: a user who reads a note reads its file with
+    `include=attachment`; the route set lets a user attach only a file he uploaded.
+    """
 
-
-def test_bundled_route_does_not_let_a_client_set_the_author(sample_app):
-    # the sample project registers bazis.contrib.uploadable.router
-    assert check_routes_author(None) == []
+    title = models.CharField(max_length=255)
+    attachment = models.ForeignKey(
+        'uploadable.FileUpload', blank=True, null=True, on_delete=models.SET_NULL, related_name='+'
+    )

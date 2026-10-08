@@ -20,10 +20,10 @@ from django.utils.translation import gettext as _
 
 from fastapi import Form, Request
 
+from bazis.contrib.author.routes_abstract import AuthorRequiredRouteBase
 from bazis.core.errors import JsonApiBazisError, JsonApiBazisException
 from bazis.core.routes_abstract.initial import http_post
 from bazis.core.routes_abstract.jsonapi import (
-    JsonapiRouteBase,
     api_action_init,
     api_action_jsonapi_init,
     api_action_response_init,
@@ -34,15 +34,34 @@ from bazis.core.schemas import CrudApiAction, SchemaFields
 from bazis.core.utils.django_types import UploadFileDjango
 
 
-class FileUploadRouteSet(JsonapiRouteBase):
-    model = apps.get_model('uploadable.FileUpload')
+class FileUploadRouteSet(AuthorRequiredRouteBase):
+    """
+    The uploaded files of the user: a user who is logged in uploads a file (he becomes its
+    `author`), lists and reads his own files. No file is changed or deleted through the
+    route. A file that another user uploaded is read through the resource that references
+    it (`include`); that route set must refuse files the user did not upload, the core
+    does not check the targets of relationships yet (see AGENTS.md).
+    """
 
+    model = apps.get_model('uploadable.FileUpload')
+    actions_exclude = [
+        'action_update',
+        'action_schema_update',
+        'action_destroy',
+        'action_post_relationships',
+        'action_update_relationships',
+        'action_delete_relationships',
+    ]
+
+    # the author is the user himself; through `include` it would show the user who uploaded
+    # the attachment of a shared object
     fields = {
         None: SchemaFields(
             include={
                 'size': None,
                 'extension': None,
-            }
+            },
+            exclude={'author': None, 'author_updated': None},
         )
     }
 
@@ -62,7 +81,6 @@ class FileUploadRouteSet(JsonapiRouteBase):
         request: Request,
         file: UploadFileDjango,
         name: str | None = Form(None),
-        id: str | None = Form(None),
         **kwargs,
     ):
         max_size = settings.BAZIS_FILE_UPLOAD_MAX_SIZE
@@ -83,7 +101,6 @@ class FileUploadRouteSet(JsonapiRouteBase):
 
         request._json = {
             'data': {
-                'id': id,
                 'type': self.model.get_resource_label(),
                 'attributes': {
                     'name': name,
@@ -95,3 +112,9 @@ class FileUploadRouteSet(JsonapiRouteBase):
         item_data = self.schema_defaults[CrudApiAction.CREATE].model_validate(request._json)
 
         return super().action_create.func(self, request, item_data)
+
+    def get_queryset(self):
+        """
+        The files of the user.
+        """
+        return super().get_queryset().filter(author=self.inject.user)
