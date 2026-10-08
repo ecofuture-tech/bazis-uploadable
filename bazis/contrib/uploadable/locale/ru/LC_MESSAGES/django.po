@@ -34,7 +34,7 @@ msgstr "Файл"
 
 #: models_abstract.py:23
 msgid "Name"
-msgstr "Наименование"
+msgstr "Название"
 
 #: models_abstract.py:24
 msgid "Extension"
