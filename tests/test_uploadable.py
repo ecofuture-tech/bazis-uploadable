@@ -258,6 +258,9 @@ def test_a_subclass_widens_the_visible_files(sample_app, media, monkeypatch):
             return qs.filter(Q(pk__in=own.values('pk')) | Q(pk__in=Note.objects.values('attachment')))
 
     assert FileUpload.get_default_route() is SharedFileRouteSet
+    # registered instead of the bundled router, it serves the same URLs
+    assert SharedFileRouteSet.get_url_prefix() == FileUploadRouteSet.get_url_prefix()
+    assert SharedFileRouteSet.get_url_prefix() == '/uploadable/file_upload'
 
     alice, bob = make_user('alice'), make_user('bob')
     alice_client, bob_client = client_of(sample_app, alice), client_of(sample_app, bob)
