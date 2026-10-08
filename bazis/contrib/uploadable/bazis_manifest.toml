@@ -16,7 +16,7 @@ pairs_well = ["bazis-permit"]
 [[extension_points]]
 name = "FileUploadRouteSet"
 import = "bazis.contrib.uploadable.routes.FileUploadRouteSet"
-use_when = "the upload route: a logged-in user uploads files and lists and reads his own; subclass it to widen get_queryset or for a model of files of the project"
+use_when = "the upload route: a logged-in user uploads files and lists and reads his own; its restrict_queryset is what the other routes link and include; subclass it (default_route = True) to widen restrict_queryset or for a model of files of the project"
 
 [[extension_points]]
 name = "FileUploadAbstract"
@@ -39,10 +39,7 @@ import = "bazis.contrib.uploadable.models_abstract.get_file_upload_storage"
 use_when = "the storage of the uploaded files (BAZIS_STORAGE_FILE_UPLOAD)"
 
 [[pitfalls]]
-text = "FileUploadRouteSet shows a user only the files he uploaded; the files of others are read through the object that references them (include)"
-
-[[pitfalls]]
-text = "the core does not yet check that a relationship targets an object the user may see: a route set of a model that references uploaded files must refuse files the user did not upload (hook_before_create, hook_after_update, hook_before_relationships_change), or a user links another user's file by its id and reads it through include"
+text = "FileUploadRouteSet shows a user only the files he uploaded, also in the relationships and `included` of the other routes: the attachments of shared objects need a subclass that widens restrict_queryset (default_route = True)"
 
 [[pitfalls]]
 text = "the media URL of a file is readable by anyone who has it; serve MEDIA_ROOT from a separate origin with Content-Disposition: attachment (except raster images) and X-Content-Type-Options: nosniff"

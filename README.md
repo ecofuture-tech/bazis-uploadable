@@ -183,13 +183,15 @@ its `author`, and the list and retrieve show a user only his own files. Files ar
 changed or deleted through the API. Files without an author (uploaded before 2.5) are not
 shown to anyone.
 
-**Limitation:** the Bazis core does not yet check that a relationship targets an object the
-user may see. A user who sets `relationships.<field> = {"id": <file id>}` on his own object
-links a file of another user and reads it with `?include=<field>`. Until the core version
-with these checks, the route set of every model that references uploaded files must refuse
-files the user did not upload (on create, on update and on the relationships endpoints).
-The sample route set `notes.routes.NoteRouteSet` shows how; see
-`bazis/contrib/uploadable/AGENTS.md`.
+The same rule holds for the other routes (Bazis 2.7): `FileUploadRouteSet` is the default
+route of the files, and its `restrict_queryset` is what a relationship of another model
+links and what `included` shows. A user who sets `relationships.<field> = {"id": <file id>}`
+to a file of another user gets `403` with the error code `ERR_RELATION_ACCESS`, and
+`?include=<field>` leaves out the files of other users (the relationship keeps the
+identifier). The route sets of the models that reference uploaded files need no checks of
+their own (the sample route set `notes.routes.NoteRouteSet` has none). To share the
+attachments of shared objects, a project widens `restrict_queryset` in a subclass with
+`default_route = True`; see `bazis/contrib/uploadable/AGENTS.md`.
 
 ### Serving Uploaded Files
 

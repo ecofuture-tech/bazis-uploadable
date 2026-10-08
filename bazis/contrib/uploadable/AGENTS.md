@@ -34,50 +34,46 @@ without a token):
 - no update, no delete (405) and no relationships endpoints: a file referenced by the
   objects of other users stays as it was.
 
-Files that other users uploaded (an attachment of a shared object) are not readable
-through `FileUploadRouteSet`. A client reads them through the object that references them
-(`GET <object>/{id}/?include=<field>`) or through a subclass that widens `get_queryset`.
-Neither is safe by itself: **the core does not yet check that a relationship targets an
-object the user may see**, so a user who sets `relationships.<field> = {"id": <file id>}`
-on his own object links a file of another user by its id and reads it through `include`.
-Until the core version with these checks, every route set of a model that references
-uploaded files verifies the files a user links: on create, on update when the file
-changes, and on the relationships endpoints (or excludes them), e.g. (the sample route
-set `notes.routes.NoteRouteSet`, tested in `tests/test_uploadable.py`):
+`FileUploadRouteSet` is the default route of `uploadable.FileUpload`: its classmethod
+`restrict_queryset` (the author filter; none for an anonymous user, the authenticated user
+of the request `UserMixin.CTX_USER_REQUEST` when the caller passes no user) is also what
+the other routes may link and include (the core, Bazis 2.7):
 
-```python
-class NoteRouteSet(UserRequiredRouteBase):
-    def check_attachment(self, file_id):  # 403 unless the user uploaded the file
-        if file_id is not None and not FileUpload.objects.filter(
-            pk=file_id, author=self.inject.user
-        ).exists():
-            raise JsonApiBazisException(JsonApiBazisError(..., status=403), status=403)
+- a relationship of another model to a file of another user fails with 403
+  `ERR_RELATION_ACCESS` (create, update, the relationships endpoints); an unchanged link
+  is not checked;
+- `GET <object>/{id}/?include=<field>` leaves out the files of other users; the
+  relationship keeps the identifier.
 
-    def hook_before_create(self, item):
-        self.check_attachment(item.attachment_id)
-        super().hook_before_create(item)
-    # hook_before_update keeps item.attachment_id, hook_after_update checks a new one;
-    # hook_before_relationships_change checks the id of `attachment`
-```
-
-A subclass of `FileUploadRouteSet` that lets a client read files by their ids widens
-`get_queryset` only with the files of objects the user may read, and only once linking is
-checked as above. This example moves to `restrict_queryset` once the core supports it:
+The route sets of the models that reference uploaded files need no checks of their own
+(the sample route set `notes.routes.NoteRouteSet` has none, `tests/test_uploadable.py`).
+To share the attachments of shared objects, widen `restrict_queryset` in a subclass and
+declare it the default route of the files (`default_route = True`, `bazis.W003` otherwise),
+e.g. with the files of the objects the user may read (tested in `tests/test_uploadable.py`):
 
 ```python
 class FileRouteSet(FileUploadRouteSet):
-    def get_queryset(self):
+    default_route = True
+
+    @classmethod
+    def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
+        own = super().restrict_queryset(qs, access_action, user=user, **kwargs)
+        if user is None or user.is_anonymous:
+            return own
         tasks = Task.objects.filter(...)  # the tasks the user may read
-        return self.model.objects.filter(
-            Q(author=self.inject.user) | Q(pk__in=tasks.values('attachment'))
-        )
+        return qs.filter(Q(pk__in=own.values('pk')) | Q(pk__in=tasks.values('attachment')))
 ```
+
+Register such a subclass instead of the bundled router: it lists and reads the widened
+files too (`get_queryset` applies `restrict_queryset`).
 
 The package does not depend on bazis-permit. With it, a project subclasses
 `FileUploadAbstract` with `PermitModelMixin` for its own model of files and registers a
 subclass of `FileUploadRouteSet` that also inherits `PermitRouteBase`: the permissions
-narrow the files of the author further; to let them decide alone, the subclass overrides
-`get_queryset` without the author filter. List `FileUploadRouteSet` first among the bases:
+narrow the files of the author further (`restrict_queryset` of `FileUploadRouteSet` calls
+the one of `PermitRouteBase` through `super()`); to let them decide alone, the subclass
+overrides `restrict_queryset` with `super(FileUploadRouteSet, cls).restrict_queryset(...)`,
+skipping the author filter. List `FileUploadRouteSet` first among the bases:
 its `action_create` reads the multipart form. Keep custom file routes as restrictive.
 Files without an `author` (uploaded before 2.5, in the admin or by scripts) are visible to
 no one through `FileUploadRouteSet`.

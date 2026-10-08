@@ -16,31 +16,34 @@ from functools import partial
 
 from django.apps import apps
 from django.conf import settings
+from django.db.models import QuerySet
 from django.utils.translation import gettext as _
 
 from fastapi import Form, Request
 
 from bazis.contrib.author.routes_abstract import AuthorRequiredRouteBase
+from bazis.contrib.users.models_abstract import UserMixin
 from bazis.core.errors import JsonApiBazisError, JsonApiBazisException
 from bazis.core.routes_abstract.initial import http_post
 from bazis.core.routes_abstract.jsonapi import (
+    RestrictedQsRouteMixin,
     api_action_init,
     api_action_jsonapi_init,
     api_action_response_init,
     item_data_typing,
     meta_fields_addition,
 )
-from bazis.core.schemas import CrudApiAction, SchemaFields
+from bazis.core.schemas import AccessAction, CrudAccessAction, CrudApiAction, SchemaFields
 from bazis.core.utils.django_types import UploadFileDjango
 
 
-class FileUploadRouteSet(AuthorRequiredRouteBase):
+class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
     """
     The uploaded files of the user: a user who is logged in uploads a file (he becomes its
     `author`), lists and reads his own files. No file is changed or deleted through the
-    route. A file that another user uploaded is read through the resource that references
-    it (`include`); that route set must refuse files the user did not upload, the core
-    does not check the targets of relationships yet (see AGENTS.md).
+    route. As the default route of the files, its `restrict_queryset` is also what the
+    other routes link and include (bazis 2.7): a user links and sees in `included` only
+    the files he uploaded (see AGENTS.md to widen it).
     """
 
     model = apps.get_model('uploadable.FileUpload')
@@ -113,8 +116,26 @@ class FileUploadRouteSet(AuthorRequiredRouteBase):
 
         return super().action_create.func(self, request, item_data)
 
+    @classmethod
+    def restrict_queryset(
+        cls, qs: QuerySet, access_action: AccessAction, user=None, **kwargs
+    ) -> QuerySet:
+        """
+        The files the user uploaded, for every action. Without a user (a route without a
+        user, e.g. called by the core for the relationships of another route) the
+        authenticated user of the request (`UserMixin.CTX_USER_REQUEST`); none for an
+        anonymous user.
+        """
+        if user is None:
+            user = UserMixin.CTX_USER_REQUEST.get()
+        if user is None or user.is_anonymous:
+            return qs.none()
+        return super().restrict_queryset(qs, access_action, user=user, **kwargs).filter(author=user)
+
     def get_queryset(self):
         """
         The files of the user.
         """
-        return super().get_queryset().filter(author=self.inject.user)
+        return self.restrict_queryset(
+            super().get_queryset(), CrudAccessAction.VIEW, user=self.inject.user
+        )
