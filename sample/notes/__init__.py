@@ -11,15 +11,3 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-from bazis.contrib.author.checks import check_routes_author
-from bazis.core.introspect import validate_manifest
-
-
-def test_manifest_is_valid():
-    assert validate_manifest('bazis.contrib.uploadable') == []
-
-
-def test_bundled_route_does_not_let_a_client_set_the_author(sample_app):
-    # the sample project registers bazis.contrib.uploadable.router
-    assert check_routes_author(None) == []

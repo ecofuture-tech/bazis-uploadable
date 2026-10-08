@@ -8,19 +8,20 @@ solves = [
     "upload files through the API (multipart form data)",
     "store files in a configurable Django storage (file system, S3...)",
     "reference uploaded files from other models",
+    "keep each user's uploads private to him (the author of a file)",
 ]
-requires = ["bazis"]
-pairs_well = ["bazis-users", "bazis-permit"]
+requires = ["bazis", "bazis-users", "bazis-author"]
+pairs_well = ["bazis-permit"]
 
 [[extension_points]]
 name = "FileUploadRouteSet"
 import = "bazis.contrib.uploadable.routes.FileUploadRouteSet"
-use_when = "the base of the project's upload route (subclass it with access control)"
+use_when = "the upload route: a logged-in user uploads files and lists and reads his own; subclass it to widen get_queryset or for a model of files of the project"
 
 [[extension_points]]
 name = "FileUploadAbstract"
 import = "bazis.contrib.uploadable.models_abstract.FileUploadAbstract"
-use_when = "a model of an uploaded file (file, name, extension, size)"
+use_when = "a model of an uploaded file (file, name, extension, size, author)"
 
 [[extension_points]]
 name = "FileUpload"
@@ -28,13 +29,20 @@ import = "bazis.contrib.uploadable.models.FileUpload"
 use_when = "the uploaded file referenced by other models (ForeignKey to 'uploadable.FileUpload')"
 
 [[extension_points]]
+name = "S3SafeServingMixin"
+import = "bazis.contrib.uploadable.storages.S3SafeServingMixin"
+use_when = "an S3 storage (django-storages) that writes uploads with the type of their name and Content-Disposition: attachment unless they are raster images (added automatically to BAZIS_STORAGE_FILE_UPLOAD)"
+
+[[extension_points]]
 name = "get_file_upload_storage"
 import = "bazis.contrib.uploadable.models_abstract.get_file_upload_storage"
 use_when = "the storage of the uploaded files (BAZIS_STORAGE_FILE_UPLOAD)"
 
 [[pitfalls]]
-text = "the bundled router (FileUploadRouteSet) has no access control: anyone can upload, list, change and delete files"
-check = "uploadable.W001"
+text = "FileUploadRouteSet shows a user only the files he uploaded: read the file of another user through the resource that references it (include) or widen get_queryset in a subclass"
+
+[[pitfalls]]
+text = "the media URL of a file is readable by anyone who has it; serve MEDIA_ROOT from a separate origin with Content-Disposition: attachment (except raster images) and X-Content-Type-Options: nosniff"
 
 [[pitfalls]]
 text = "BAZIS_FILE_UPLOAD_MAX_SIZE is checked after the whole body is received: also limit the body size on the reverse proxy"

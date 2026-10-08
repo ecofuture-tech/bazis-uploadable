@@ -3,7 +3,10 @@
 File uploads for Bazis: the `FileUpload` model (`FileUploadAbstract`) and the multipart
 `FileUploadRouteSet`. The storage is `BAZIS_STORAGE_FILE_UPLOAD` (a callable storage of the
 field, so changing it needs no migration); `BAZIS_FILE_UPLOAD_MAX_SIZE` limits the size.
-The bundled route set has no access control: projects subclass it.
+A file has an `author` (bazis-author): the bundled route set requires a user and shows him
+only his files, with no update or delete. An S3 storage writes uploads as downloads unless
+they are raster images; the media host must be a separate origin (see
+`bazis/contrib/uploadable/AGENTS.md`).
 
 The package code is in `bazis/contrib/uploadable`, the sample project used by the tests is in `sample/`,
 the tests are in `tests/`.

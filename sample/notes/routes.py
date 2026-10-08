@@ -12,14 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from bazis.contrib.author.checks import check_routes_author
-from bazis.core.introspect import validate_manifest
+from django.apps import apps
+
+from bazis.contrib.users.routes_abstract import UserRequiredRouteBase
 
 
-def test_manifest_is_valid():
-    assert validate_manifest('bazis.contrib.uploadable') == []
+class NoteRouteSet(UserRequiredRouteBase):
+    """
+    The notes: every user who is logged in reads them all.
+    """
 
-
-def test_bundled_route_does_not_let_a_client_set_the_author(sample_app):
-    # the sample project registers bazis.contrib.uploadable.router
-    assert check_routes_author(None) == []
+    model = apps.get_model('notes.Note')

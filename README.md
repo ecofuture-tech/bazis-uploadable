@@ -24,7 +24,7 @@ class Document(FileUploadAbstract, DtMixin, UuidMixin):
         verbose_name_plural = 'Documents'
 
 # Create a route for uploads
-from bazis.contrib.uploadable.routes_abstract import FileUploadRouteSet
+from bazis.contrib.uploadable.routes import FileUploadRouteSet
 from django.apps import apps
 
 class DocumentRouteSet(FileUploadRouteSet):
@@ -59,12 +59,13 @@ class DocumentRouteSet(FileUploadRouteSet):
 - **Automatic metadata extraction** — filename, extension, size
 - **JSON:API integration** — standardized response format
 
-**This package requires the base `bazis` package to be installed.**
+**This package requires `bazis`, `bazis-users` and `bazis-author` (installed as dependencies).**
 
 ## Requirements
 
 - **Python**: 3.12+
 - **bazis**: latest version
+- **bazis-author** (with **bazis-users**): the author of a file; set `BS_AUTH_USER_MODEL`
 - **PostgreSQL**: 12+
 - **Redis**: For caching
 
@@ -95,6 +96,7 @@ Abstract model for storing uploaded files.
 - `file` — FileField for storing the file
 - `name` — filename (optional, automatically filled from file name)
 - `extension` — file extension (optional, automatically extracted)
+- `author`, `author_updated` — the user who uploaded the file (`AuthorMixin` of bazis-author)
 
 **Properties**:
 
@@ -126,23 +128,25 @@ class Document(FileUploadAbstract, DtMixin, UuidMixin):
 
 Ready-to-use route for file uploading via multipart/form-data.
 
-**Location**: `bazis.contrib.uploadable.routes_abstract.FileUploadRouteSet`
+**Location**: `bazis.contrib.uploadable.routes.FileUploadRouteSet`
 
 **Features**:
 
-- Accepts files via `multipart/form-data`
+- Accepts files via `multipart/form-data`; the server generates the id
 - Automatically includes `size` and `extension` fields in schema
 - Supports optional `name` field for renaming files
 - Returns data in JSON:API format
+- Requires a user; the uploader is the `author` of the file
 
-**Endpoint**:
+**Endpoints**:
 
 - **POST /** — upload a new file
+- **GET /**, **GET /{id}/** — the files of the user (others are 404)
 
 **Usage example**:
 
 ```python
-from bazis.contrib.uploadable.routes_abstract import FileUploadRouteSet
+from bazis.contrib.uploadable.routes import FileUploadRouteSet
 from django.apps import apps
 
 class DocumentRouteSet(FileUploadRouteSet):
@@ -174,10 +178,26 @@ received, so also limit the request size on the reverse proxy (e.g. `client_max_
 
 ### Access Control
 
-`FileUploadRouteSet` does not check who calls it: anyone who can reach the API can upload,
-list, change and delete files. In production, register a subclass that requires a user
-(e.g. with `UserRequiredRouteBase` of bazis-users) or permissions (bazis-permit) instead
-of the bundled router.
+`FileUploadRouteSet` requires a logged-in user (bazis-users): the user who uploads a file is
+its `author`, and the list and retrieve show a user only his own files. Files are not
+changed or deleted through the API. A file uploaded by another user (e.g. the attachment of
+a shared object) is read through the object that references it, with
+`?include=<field>`, or through a subclass of `FileUploadRouteSet` that widens
+`get_queryset` (see `bazis/contrib/uploadable/AGENTS.md`). Files without an author (uploaded
+before 2.5) are not shown to anyone.
+
+### Serving Uploaded Files
+
+An uploaded HTML page or SVG image runs its scripts when it is opened from the media host.
+Serve the media from a separate origin (never the origin of the frontend or the API: the
+scripts could read the session token in its `localStorage`), show only raster images
+inline, and send every other file with `Content-Disposition: attachment` and
+`X-Content-Type-Options: nosniff`. An S3 storage of django-storages writes each object
+with the type of its name (not the one the client declared) and, unless it is a raster
+image, with `Content-Disposition: attachment` automatically; `nosniff` is a header of the
+CDN or proxy in front of the bucket. For the file system storage configure the web server
+of the media host (an nginx example is in `bazis/contrib/uploadable/AGENTS.md`). The media URL of a file is readable by
+anyone who has it: use signed URLs for private files.
 
 ## Usage
 
@@ -206,7 +226,7 @@ class Document(FileUploadAbstract, DtMixin, UuidMixin):
 **routes.py**:
 
 ```python
-from bazis.contrib.uploadable.routes_abstract import FileUploadRouteSet
+from bazis.contrib.uploadable.routes import FileUploadRouteSet
 from bazis.core.schemas.fields import SchemaField, SchemaFields
 from django.apps import apps
 
@@ -361,7 +381,7 @@ AWS_SECRET_ACCESS_KEY = 'your-secret-key'
 AWS_STORAGE_BUCKET_NAME = 'your-bucket-name'
 AWS_S3_REGION_NAME = 'us-east-1'
 AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
-AWS_DEFAULT_ACL = 'public-read'
+AWS_DEFAULT_ACL = 'public-read'  # or None with signed URLs (AWS_QUERYSTRING_AUTH) for private files
 ```
 
 ### MinIO (S3-compatible storage)
@@ -459,7 +479,7 @@ class Document(FileUploadAbstract, DtMixin, UuidMixin):
 **routes.py**:
 
 ```python
-from bazis.contrib.uploadable.routes_abstract import FileUploadRouteSet
+from bazis.contrib.uploadable.routes import FileUploadRouteSet
 from bazis.core.schemas.fields import SchemaFields
 from django.apps import apps
 

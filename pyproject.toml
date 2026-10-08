@@ -34,6 +34,7 @@ classifiers = [
 ]
 dependencies = [
     "bazis>=2.4.0",
+    "bazis-author>=2.4.0",
     "python-multipart>=0.0.18",
 ]
 
