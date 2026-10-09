@@ -42,6 +42,9 @@ use_when = "the storage of the uploaded files (BAZIS_STORAGE_FILE_UPLOAD)"
 text = "FileUploadRouteSet shows a user only the files he uploaded, also in the relationships and `included` of the other routes: the attachments of shared objects need a subclass that widens restrict_queryset (default_route = True)"
 
 [[pitfalls]]
+text = "FileUploadRouteSet and its subclasses restrict the files with their own restrict_queryset: permit.W002 does not apply to them from bazis-permit 2.10; do not declare permit_public = True, which says the files are public"
+
+[[pitfalls]]
 text = "the media URL of a file is readable by anyone who has it; serve MEDIA_ROOT from a separate origin with Content-Disposition: attachment (except raster images) and X-Content-Type-Options: nosniff"
 
 [[pitfalls]]
