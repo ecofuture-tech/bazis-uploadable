@@ -70,7 +70,20 @@ class FileRouteSet(FileUploadRouteSet):
 ```
 
 Register such a subclass instead of the bundled router: it lists and reads the widened
-files too (`get_queryset` applies `restrict_queryset`).
+files too (`get_queryset` applies `restrict_queryset`), at the same URLs (the resource path
+of the model, `/uploadable/file_upload/`). Do not register both:
+
+```python
+# <app>/router.py
+files_router = BazisRouter(tags=[_('Uploaded files')])
+files_router.register(FileRouteSet.as_router())
+
+# the root router, instead of router.register('bazis.contrib.uploadable.router')
+router.register(files_router)
+```
+
+A rule such as "a file is visible with the object that references it" has no declarative
+form: write it in `restrict_queryset` as above, one query per model that references files.
 
 The package does not depend on bazis-permit. With it, a project subclasses
 `FileUploadAbstract` with `PermitModelMixin` for its own model of files and registers a
