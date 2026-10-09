@@ -85,6 +85,11 @@ router.register(files_router)
 A rule such as "a file is visible with the object that references it" has no declarative
 form: write it in `restrict_queryset` as above, one query per model that references files.
 
+`FileUploadRouteSet` and its subclasses restrict the files with their own
+`restrict_queryset`: `permit.W002` of bazis-permit does not apply to them from
+bazis-permit 2.10 (with 2.9 the warning is a false positive). Do not declare
+`permit_public = True` on them: it says that the files are public.
+
 The package does not depend on bazis-permit. With it, a project subclasses
 `FileUploadAbstract` with `PermitModelMixin` for its own model of files and registers a
 subclass of `FileUploadRouteSet` that also inherits `PermitRouteBase`: the permissions
