@@ -64,9 +64,17 @@ class CertificateRouteSet(PermitRouteBase):
   any of them. The own files of the user stay visible.
 - Visible means the list, the item, the download of the route of the files and
   `included` of the other routes. An anonymous user sees no file.
-- The visibility follows the objects: when the user no longer sees the object, the file
-  is 404 again. The declaration counts once the route class is defined (as the default
-  routes of the core); declare it on the route sets you register.
+- The visibility follows the objects, not the rights to the field: when the user no
+  longer sees the object, the file is 404 again; a field permission (bazis-permit) that
+  hides the relation field of an object he sees does not hide its file. Declare only the
+  fields whose files every reader of the object may read.
+- Only a route class that declares `files_visible` in its own body counts: a subclass
+  does not inherit it (declare it again), and `uploadable.E001` reports a declaration on
+  an abstract route class. The declaration counts once the route class is defined (as the
+  default routes of the core): declare it on the route sets you register. The
+  declarations are resolved once the application is loaded; a test that defines a
+  declaring route set later calls `files_visible_cache_clear()`
+  (`bazis.contrib.uploadable.routes`).
 - Forward relations of the model of the route (foreign key, one-to-one, many-to-many) to a
   model of files whose default route is `FileUploadRouteSet` or a subclass;
   `bazis_doctor` reports any other name (`uploadable.E001`, also for a string instead of a

@@ -29,14 +29,18 @@ def files_visible_errors(route_cls) -> list[str]:
     from .routes import FileUploadRouteSet, files_visible_field
 
     names = route_cls.files_visible
+    if getattr(route_cls, 'abstract', False) or getattr(route_cls, 'model', None) is None:
+        return ['is declared on an abstract route class (or one without a model): it is not inherited']
     if not isinstance(names, tuple | list) or not all(isinstance(it, str) for it in names):
         return [f'is {names!r}, not a tuple of field names']
     errors = []
     for name in names:
         files_model = files_visible_field(route_cls.model, name)
-        default_route = files_model.get_default_route() if files_model else None
+        # not a model of files (e.g. a relation to ContentType, which has no default route)
+        is_files = isinstance(files_model, type) and issubclass(files_model, FileUploadAbstract)
+        default_route = files_model.get_default_route() if is_files else None
         if not (
-            issubclass(files_model or object, FileUploadAbstract)
+            is_files
             and isinstance(default_route, type)
             and issubclass(default_route, FileUploadRouteSet)
         ):
@@ -52,7 +56,8 @@ def check_files_visible(app_configs, **kwargs):
     """
     `files_visible` of a route set names the relations of its model to the uploaded files
     that the users who see its objects read: a name that is not such a relation shows no
-    file (`uploadable.E001`). Runs when the application is loaded.
+    file, nor does a declaration on an abstract route class (`uploadable.E001`). Runs when
+    the application is loaded.
     """
     from bazis.core.introspect import loaded_app
 

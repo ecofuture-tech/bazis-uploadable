@@ -58,8 +58,11 @@ text = "FileUploadRouteSet shows a user only the files he uploaded, also in `inc
 text = "a relationship links only the own files of the user (the core passes link=True, Bazis 2.16): a visible file of another user is 422 ERR_RELATION_LINK, an invisible one 403 ERR_RELATION_ACCESS; the server links a generated file itself (create_for); a subclass that widens restrict_queryset keeps the own files for kwargs['link']"
 
 [[pitfalls]]
-text = "a name of files_visible that is not a forward relation of the model of the route to a model of files whose default route is FileUploadRouteSet (or a string instead of a tuple) shows no file"
+text = "a name of files_visible that is not a forward relation of the model of the route to a model of files whose default route is FileUploadRouteSet (or a string instead of a tuple) shows no file; files_visible is not inherited: a subclass of a declaring route set (or of an abstract one that declares it) shows no file until it declares it again"
 check = "uploadable.E001"
+
+[[pitfalls]]
+text = "files_visible follows the objects, not the field permissions: a reader of an object whose relation field bazis-permit hides still reads the file; declare only the fields whose files every reader may read"
 
 [[pitfalls]]
 text = "FileUploadRouteSet and its subclasses restrict the files with their own restrict_queryset: permit.W002 does not apply to them from bazis-permit 2.10; do not declare permit_public = True, which says the files are public"

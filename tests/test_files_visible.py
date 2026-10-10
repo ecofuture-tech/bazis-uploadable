@@ -22,12 +22,17 @@ downloaded through the route of the files, with its access check.
 from types import SimpleNamespace
 
 from django.apps import apps
+from django.db.models import Q
 
 import pytest
 
 from bazis.contrib.uploadable.checks import check_files_visible, files_visible_errors
 from bazis.contrib.uploadable.models import FileUpload
-from bazis.contrib.uploadable.routes import FileUploadRouteSet
+from bazis.contrib.uploadable.routes import (
+    FileUploadRouteSet,
+    files_visible_cache_clear,
+    files_visible_routes,
+)
 from bazis.core.schemas import CrudAccessAction
 
 from .test_uploadable import FILES, NOTES, client_of, ids, make_user, note_body, upload
@@ -266,3 +271,36 @@ def test_files_visible_errors(sample_app):
         'route is FileUploadRouteSet'
         for name in ('title', 'owner', 'missing')
     ]
+    # a relation to a model that is not a JSON:API model (no default route)
+    assert errors(('content_type',), apps.get_model('auth.Permission')) == [
+        "'content_type' is not a relation of auth.Permission to a model of uploaded files "
+        'whose default route is FileUploadRouteSet'
+    ]
+    abstract = SimpleNamespace(files_visible=('attachment',), model=Memo(), abstract=True)
+    assert files_visible_errors(abstract) == [
+        'is declared on an abstract route class (or one without a model): it is not inherited'
+    ]
+
+
+def test_only_the_declaring_route_sets_count(sample_app, monkeypatch):
+    """
+    A subclass of a declaring route set does not inherit `files_visible`; the declarations
+    are resolved once the application is loaded.
+    """
+    from notes.routes import BoardRouteSet, MemoRouteSet
+
+    # a route class becomes the default route of its model: restore it
+    monkeypatch.setattr(Memo(), '_default_route', Memo().get_default_route())
+
+    class MemoArchiveRouteSet(MemoRouteSet):
+        @classmethod
+        def members_q(cls, user):
+            return Q()
+
+    files_visible_cache_clear()
+    declared = files_visible_routes(FileUpload)
+    assert MemoArchiveRouteSet.files_visible == ('attachment',)
+    assert set(declared) == {(MemoRouteSet, ('attachment',)), (BoardRouteSet, ('files',))}
+    assert files_visible_routes(FileUpload) is declared
+    files_visible_cache_clear()
+    assert files_visible_routes(FileUpload) is not declared

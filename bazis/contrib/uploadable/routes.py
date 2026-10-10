@@ -66,8 +66,9 @@ def files_visible_field(model: type[Model], name: str) -> type[Model] | None:
 
 def files_visible_declarations():
     """
-    The route classes that declare `files_visible`: not abstract, with a model. A route
-    class counts once it is defined, as for the default routes of the core.
+    The route classes that declare `files_visible` in their own body: a subclass does not
+    inherit the declaration (it would make the files visible through every route class of
+    the model derived from it).
     """
     from bazis.core.routes_abstract.jsonapi import JsonapiRouteBase
 
@@ -78,30 +79,47 @@ def files_visible_declarations():
                 continue
             seen.add(route_cls)
             pending.append(route_cls)
-            if (
-                getattr(route_cls, 'files_visible', None) is not None
-                and not getattr(route_cls, 'abstract', False)
-                and getattr(route_cls, 'model', None) is not None
-            ):
+            if 'files_visible' in vars(route_cls):
                 yield route_cls
+
+
+#: the declarations of `files_visible` by model of files, kept once the application is
+#: loaded (its routers have imported the route sets)
+_files_visible_cache: dict[type[Model], list[tuple[type, tuple[str, ...]]]] = {}
+
+
+def files_visible_cache_clear() -> None:
+    """
+    Forgets the declarations of `files_visible`: for a route set defined after the
+    application is loaded (a test).
+    """
+    _files_visible_cache.clear()
 
 
 def files_visible_routes(files_model: type[Model]) -> list[tuple[type, tuple[str, ...]]]:
     """
     The route sets that make the files of `files_model` visible through their objects:
-    the declaring route classes with their names of `files_visible` that refer to
-    `files_model` (a string is not a tuple of names, `uploadable.E001`: it refers to none).
+    the declaring route classes (not abstract, with a model) with their names of
+    `files_visible` that refer to `files_model` (a string is not a tuple of names,
+    `uploadable.E001`: it refers to none). Resolved once the application is loaded, every
+    time before.
     """
+    from bazis.core.introspect import loaded_app
+
+    if (cached := _files_visible_cache.get(files_model)) is not None:
+        return cached
     result = []
     for route_cls in files_visible_declarations():
-        names = route_cls.files_visible
+        names, model = route_cls.files_visible, getattr(route_cls, 'model', None)
+        if getattr(route_cls, 'abstract', False) or model is None:
+            continue
         if not isinstance(names, tuple | list):
             continue
-        names = tuple(
-            it for it in names if files_visible_field(route_cls.model, it) is files_model
-        )
+        names = tuple(it for it in names if files_visible_field(model, it) is files_model)
         if names:
             result.append((route_cls, names))
+    if loaded_app() is not None:
+        _files_visible_cache[files_model] = result
     return result
 
 
