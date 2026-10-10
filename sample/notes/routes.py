@@ -13,8 +13,12 @@
 # limitations under the License.
 
 from django.apps import apps
+from django.db.models import Q
 
+from bazis.contrib.users.models_abstract import UserMixin
 from bazis.contrib.users.routes_abstract import UserRequiredRouteBase
+from bazis.core.routes_abstract.jsonapi import RestrictedQsRouteMixin
+from bazis.core.schemas import CrudAccessAction
 
 
 class NoteRouteSet(UserRequiredRouteBase):
@@ -26,3 +30,55 @@ class NoteRouteSet(UserRequiredRouteBase):
     """
 
     model = apps.get_model('notes.Note')
+
+
+class MembersRouteBase(RestrictedQsRouteMixin, UserRequiredRouteBase):
+    """
+    The objects of a model a user sees: those that `members_q` gives him.
+    """
+
+    abstract = True
+
+    @classmethod
+    def members_q(cls, user) -> Q:
+        raise NotImplementedError
+
+    @classmethod
+    def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
+        user = user or UserMixin.CTX_USER_REQUEST.get()
+        if user is None or user.is_anonymous:
+            return qs.none()
+        qs = super().restrict_queryset(qs, access_action, user=user, **kwargs)
+        return qs.filter(cls.members_q(user)).distinct()
+
+    def get_queryset(self):
+        return self.restrict_queryset(
+            super().get_queryset(), CrudAccessAction.VIEW, user=self.inject.user
+        )
+
+
+class MemoRouteSet(MembersRouteBase):
+    """
+    The memos of their owner and their readers: whoever sees a memo reads its attachment,
+    not its cover. A user attaches only a file he uploaded.
+    """
+
+    model = apps.get_model('notes.Memo')
+    files_visible = ('attachment',)
+
+    @classmethod
+    def members_q(cls, user) -> Q:
+        return Q(owner=user) | Q(readers=user)
+
+
+class BoardRouteSet(MembersRouteBase):
+    """
+    The boards of their members: a member reads all the files of a board.
+    """
+
+    model = apps.get_model('notes.Board')
+    files_visible = ('files',)
+
+    @classmethod
+    def members_q(cls, user) -> Q:
+        return Q(members=user)

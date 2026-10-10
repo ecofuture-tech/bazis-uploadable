@@ -15,6 +15,7 @@
 import os
 
 from django.conf import settings
+from django.core.files.base import ContentFile, File
 from django.core.files.storage import FileSystemStorage
 from django.db import models
 from django.utils.functional import cached_property
@@ -42,11 +43,39 @@ def get_file_upload_storage():
     return FileStorage()
 
 
+class FileUploadManager(models.Manager):
+    """
+    The manager of the uploaded files, with `create_for` for the files the server writes.
+    """
+
+    def create_for(self, author, name: str, content: bytes | str | File):
+        """
+        Stores a file the server generated (a PDF, a report) as an uploaded file of `author`
+        and returns it: `name` is its name (and the extension of the stored file), `content`
+        its bytes, a text (UTF-8) or a Django `File`. `author` is the owner who sees it and
+        links it to objects; None keeps it without an author outside a request (inside one
+        bazis-author makes the user of the request its author). Whoever else should read
+        it sees it through the objects that reference it (`files_visible`). The size limit
+        of the uploads does not apply.
+        """
+        if isinstance(content, str):
+            content = content.encode()
+        if not isinstance(content, File):
+            content = ContentFile(content)
+        item = self.model(author=author, name=name)
+        item.file.save(name, content, save=False)
+        item.save()
+        return item
+
+
 class FileUploadAbstract(AuthorMixin):
     """
     An uploaded file. Its `author` (bazis-author) is the user who uploaded it: the route set
-    `FileUploadRouteSet` shows a user only his files.
+    `FileUploadRouteSet` shows a user his files and the files of the objects he sees
+    through a route set that declares them in `files_visible`.
     """
+
+    objects = FileUploadManager()
 
     file = models.FileField(
         _('File'), upload_to=get_file_path, max_length=255, storage=get_file_upload_storage

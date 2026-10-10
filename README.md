@@ -141,7 +141,8 @@ Ready-to-use route for file uploading via multipart/form-data.
 **Endpoints**:
 
 - **POST /** — upload a new file
-- **GET /**, **GET /{id}/** — the files of the user (others are 404)
+- **GET /**, **GET /{id}/** — the files of the user and the visible ones (others are 404)
+- **GET /{id}/download/** — the content of such a file, with the access check
 
 **Usage example**:
 
@@ -179,19 +180,30 @@ received, so also limit the request size on the reverse proxy (e.g. `client_max_
 ### Access Control
 
 `FileUploadRouteSet` requires a logged-in user (bazis-users): the user who uploads a file is
-its `author`, and the list and retrieve show a user only his own files. Files are not
-changed or deleted through the API. Files without an author (uploaded before 2.5) are not
-shown to anyone.
+its `author`, and the list, retrieve and download show a user his own files and the files
+visible to him through the objects that reference them. Files are not changed or deleted
+through the API.
+
+A route set of a model that references files declares the fields whose files its readers
+read; whoever sees an object (its `restrict_queryset`) reads, downloads and includes them,
+and several route sets add up:
+
+```python
+class CertificateRouteSet(PermitRouteBase):
+    model = apps.get_model('training.Certificate')
+    files_visible = ('file',)
+```
 
 The same rule holds for the other routes (Bazis 2.7): `FileUploadRouteSet` is the default
 route of the files, and its `restrict_queryset` is what a relationship of another model
-links and what `included` shows. A user who sets `relationships.<field> = {"id": <file id>}`
-to a file of another user gets `403` with the error code `ERR_RELATION_ACCESS`, and
-`?include=<field>` leaves out the files of other users (the relationship keeps the
+links and what `included` shows. A user links only his own files (Bazis 2.16):
+`relationships.<field> = {"id": <file id>}` with a file of another user fails with `422`
+`ERR_RELATION_LINK` if he sees it, else with `403` `ERR_RELATION_ACCESS`, and
+`?include=<field>` leaves out the files he does not see (the relationship keeps the
 identifier). The route sets of the models that reference uploaded files need no checks of
-their own (the sample route set `notes.routes.NoteRouteSet` has none). To share the
-attachments of shared objects, a project widens `restrict_queryset` in a subclass with
-`default_route = True`; see `bazis/contrib/uploadable/AGENTS.md`.
+their own (the sample route set `notes.routes.NoteRouteSet` has none). A file the server
+generates is stored with `FileUpload.objects.create_for(author, name, content)`; see
+`bazis/contrib/uploadable/AGENTS.md` (also for a recipe of a PDF with reproducible fonts).
 
 ### Serving Uploaded Files
 
@@ -204,7 +216,8 @@ with the type of its name (not the one the client declared) and, unless it is a 
 image, with `Content-Disposition: attachment` automatically; `nosniff` is a header of the
 CDN or proxy in front of the bucket. For the file system storage configure the web server
 of the media host (an nginx example is in `bazis/contrib/uploadable/AGENTS.md`). The media URL of a file is readable by
-anyone who has it: use signed URLs for private files.
+anyone who has it: keep private files out of the public media and read them through
+`/{id}/download/`, or use signed URLs.
 
 ## Usage
 

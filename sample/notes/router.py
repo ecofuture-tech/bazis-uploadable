@@ -19,3 +19,5 @@ from . import routes
 
 router = BazisRouter(tags=['Notes'])
 router.register(routes.NoteRouteSet.as_router())
+router.register(routes.MemoRouteSet.as_router())
+router.register(routes.BoardRouteSet.as_router())

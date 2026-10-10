@@ -25,12 +25,6 @@ FILES = '/api/v1/uploadable/file_upload/'
 NOTES = '/api/v1/notes/note/'
 
 
-@pytest.fixture
-def media(settings, tmp_path):
-    settings.MEDIA_ROOT = str(tmp_path)
-    return tmp_path
-
-
 def make_user(name):
     return get_user_model().objects.create_user(name, password=f'{name}-password-1')
 
@@ -231,9 +225,10 @@ def test_files_without_an_authenticated_user():
 @pytest.mark.django_db(transaction=True)
 def test_a_subclass_widens_the_visible_files(sample_app, media, monkeypatch):
     """
-    The pattern of AGENTS.md: the default route of the files shows also the files of the
-    notes (every user reads every note), so the attachments of shared notes are linked
-    and included for everybody.
+    The pattern of AGENTS.md for a rule `files_visible` does not express: the default route
+    of the files shows also the files of the notes (every user reads every note), so the
+    attachments of shared notes are included for everybody; a relationship still links
+    only the own files (`link`).
     """
     from django.db.models import Q
 
@@ -253,7 +248,7 @@ def test_a_subclass_widens_the_visible_files(sample_app, media, monkeypatch):
         def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
             user = user or UserMixin.CTX_USER_REQUEST.get()
             own = super().restrict_queryset(qs, access_action, user=user, **kwargs)
-            if user is None or user.is_anonymous:
+            if user is None or user.is_anonymous or kwargs.get('link'):
                 return own
             return qs.filter(Q(pk__in=own.values('pk')) | Q(pk__in=Note.objects.values('attachment')))
 
@@ -270,7 +265,9 @@ def test_a_subclass_widens_the_visible_files(sample_app, media, monkeypatch):
 
     response = bob_client.get(f'{NOTES}{note}/', params={'include': 'attachment'})
     assert [it['id'] for it in response.json()['included']] == [attached]
-    assert bob_client.post(NOTES, json_data=note_body('Copy', attached)).status_code == 201
+    response = bob_client.post(NOTES, json_data=note_body('Copy', attached))
+    assert response.status_code == 422, response.text
+    assert response.json()['errors'][0]['code'] == 'ERR_RELATION_LINK'
     response = bob_client.post(NOTES, json_data=note_body('Steal', private))
     assert response.status_code == 403
     assert response.json()['errors'][0]['code'] == 'ERR_RELATION_ACCESS'

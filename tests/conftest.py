@@ -33,6 +33,12 @@ def sample_app():
     return app
 
 
+@pytest.fixture
+def media(settings, tmp_path):
+    settings.MEDIA_ROOT = str(tmp_path)
+    return tmp_path
+
+
 @pytest.fixture(scope='session')
 def temp_file():
     with tempfile.NamedTemporaryFile(delete=False) as tmp_file:

@@ -9,6 +9,9 @@ solves = [
     "store files in a configurable Django storage (file system, S3...)",
     "reference uploaded files from other models",
     "keep each user's uploads private to him (the author of a file)",
+    "show a file to whoever sees an object that references it (files_visible on its route set)",
+    "download a file through a route that checks the access",
+    "store a file the server generates (a PDF, a report) for an owner (create_for)",
 ]
 requires = ["bazis", "bazis-users", "bazis-author"]
 pairs_well = ["bazis-permit"]
@@ -16,7 +19,17 @@ pairs_well = ["bazis-permit"]
 [[extension_points]]
 name = "FileUploadRouteSet"
 import = "bazis.contrib.uploadable.routes.FileUploadRouteSet"
-use_when = "the upload route: a logged-in user uploads files and lists and reads his own; its restrict_queryset is what the other routes link and include; subclass it (default_route = True) to widen restrict_queryset or for a model of files of the project"
+use_when = "the upload route: a logged-in user uploads files, lists, reads and downloads (/{id}/download/) his own and the visible ones (files_visible); its restrict_queryset is what the other routes include, and with link=True (only the own files) what they link; subclass it (default_route = True) for a rule files_visible does not express or for a model of files of the project"
+
+[[extension_points]]
+name = "files_visible"
+import = "bazis.contrib.uploadable.routes.files_visible_routes"
+use_when = "declare files_visible = ('file',) on the route set of a model that references uploaded files: whoever sees its objects (its restrict_queryset for view) reads, downloads and includes their files; several route sets add up"
+
+[[extension_points]]
+name = "FileUploadManager.create_for"
+import = "bazis.contrib.uploadable.models_abstract.FileUploadManager"
+use_when = "FileUpload.objects.create_for(author, name, content) stores a file the server generated (bytes, text or File) for an owner; link it to the object and declare the field in files_visible for its readers"
 
 [[extension_points]]
 name = "FileUploadAbstract"
@@ -39,13 +52,20 @@ import = "bazis.contrib.uploadable.models_abstract.get_file_upload_storage"
 use_when = "the storage of the uploaded files (BAZIS_STORAGE_FILE_UPLOAD)"
 
 [[pitfalls]]
-text = "FileUploadRouteSet shows a user only the files he uploaded, also in the relationships and `included` of the other routes: the attachments of shared objects need a subclass that widens restrict_queryset (default_route = True)"
+text = "FileUploadRouteSet shows a user only the files he uploaded, also in `included` of the other routes: declare files_visible on the route set of the objects whose readers read their files, rather than a subclass that unions the restrict_queryset of several route sets"
+
+[[pitfalls]]
+text = "a relationship links only the own files of the user (the core passes link=True, Bazis 2.16): a visible file of another user is 422 ERR_RELATION_LINK, an invisible one 403 ERR_RELATION_ACCESS; the server links a generated file itself (create_for); a subclass that widens restrict_queryset keeps the own files for kwargs['link']"
+
+[[pitfalls]]
+text = "a name of files_visible that is not a forward relation of the model of the route to a model of files whose default route is FileUploadRouteSet (or a string instead of a tuple) shows no file"
+check = "uploadable.E001"
 
 [[pitfalls]]
 text = "FileUploadRouteSet and its subclasses restrict the files with their own restrict_queryset: permit.W002 does not apply to them from bazis-permit 2.10; do not declare permit_public = True, which says the files are public"
 
 [[pitfalls]]
-text = "the media URL of a file is readable by anyone who has it; serve MEDIA_ROOT from a separate origin with Content-Disposition: attachment (except raster images) and X-Content-Type-Options: nosniff"
+text = "the media URL of a file (the attribute file) is readable by anyone who has it, also after he loses access: serve MEDIA_ROOT from a separate origin with Content-Disposition: attachment (except raster images) and X-Content-Type-Options: nosniff; for private files keep them out of the public media and read them through /{id}/download/ (with the token), or use a storage that signs its URLs"
 
 [[pitfalls]]
 text = "BAZIS_FILE_UPLOAD_MAX_SIZE is checked after the whole body is received: also limit the body size on the reverse proxy"

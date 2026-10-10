@@ -4,8 +4,10 @@ File uploads for Bazis: the `FileUpload` model (`FileUploadAbstract`) and the mu
 `FileUploadRouteSet`. The storage is `BAZIS_STORAGE_FILE_UPLOAD` (a callable storage of the
 field, so changing it needs no migration); `BAZIS_FILE_UPLOAD_MAX_SIZE` limits the size.
 A file has an `author` (bazis-author): the bundled route set requires a user and shows him
-only his files, with no update or delete. Its classmethod `restrict_queryset` (the author
-filter) is also what the other routes link and include (the core, Bazis 2.7). An S3 storage writes uploads as downloads unless
+his files and the files of the objects he sees through a route set that declares them in
+`files_visible`, with a download route and no update or delete. Its classmethod
+`restrict_queryset` is also what the other routes include, and with `link=True` (only the
+own files, Bazis 2.16) what they link. An S3 storage writes uploads as downloads unless
 they are raster images; the media host must be a separate origin (see
 `bazis/contrib/uploadable/AGENTS.md`).
 

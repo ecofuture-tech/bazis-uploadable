@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from django.conf import settings
 from django.db import models
 
 from bazis.core.models_abstract import JsonApiMixin
@@ -28,3 +29,32 @@ class Note(JsonApiMixin):
     attachment = models.ForeignKey(
         'uploadable.FileUpload', blank=True, null=True, on_delete=models.SET_NULL, related_name='+'
     )
+
+
+class Memo(JsonApiMixin):
+    """
+    A memo its owner and its readers read: its attachment is visible to them
+    (`files_visible` of `MemoRouteSet`), its cover is not declared and stays private.
+    """
+
+    title = models.CharField(max_length=255)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL, blank=True, null=True, on_delete=models.CASCADE, related_name='+'
+    )
+    readers = models.ManyToManyField(settings.AUTH_USER_MODEL, blank=True, related_name='+')
+    attachment = models.ForeignKey(
+        'uploadable.FileUpload', blank=True, null=True, on_delete=models.SET_NULL, related_name='+'
+    )
+    cover = models.ForeignKey(
+        'uploadable.FileUpload', blank=True, null=True, on_delete=models.SET_NULL, related_name='+'
+    )
+
+
+class Board(JsonApiMixin):
+    """
+    A board of its members, with many files (`files_visible` of `BoardRouteSet`).
+    """
+
+    title = models.CharField(max_length=255)
+    members = models.ManyToManyField(settings.AUTH_USER_MODEL, blank=True, related_name='+')
+    files = models.ManyToManyField('uploadable.FileUpload', blank=True, related_name='+')

@@ -12,19 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
+from functools import partial, reduce
+from operator import or_
 
 from django.apps import apps
 from django.conf import settings
-from django.db.models import QuerySet
+from django.core.exceptions import FieldDoesNotExist
+from django.db.models import Model, Q, QuerySet
+from django.utils.http import content_disposition_header
 from django.utils.translation import gettext as _
 
-from fastapi import Form, Request
+from fastapi import Form, HTTPException, Request
+
+from starlette.responses import StreamingResponse
 
 from bazis.contrib.author.routes_abstract import AuthorRequiredRouteBase
 from bazis.contrib.users.models_abstract import UserMixin
 from bazis.core.errors import JsonApiBazisError, JsonApiBazisException
-from bazis.core.routes_abstract.initial import http_post
+from bazis.core.routes_abstract.initial import http_get, http_post
 from bazis.core.routes_abstract.jsonapi import (
     RestrictedQsRouteMixin,
     api_action_init,
@@ -34,16 +39,99 @@ from bazis.core.routes_abstract.jsonapi import (
     meta_fields_addition,
 )
 from bazis.core.schemas import AccessAction, CrudAccessAction, CrudApiAction, SchemaFields
+from bazis.core.schemas.enums import RouteKind
 from bazis.core.utils.django_types import UploadFileDjango
+
+from .storages import INLINE_CONTENT_TYPES, served_content_type
+
+
+#: the size of the chunks a download reads from the storage
+DOWNLOAD_CHUNK_SIZE = 64 * 1024
+
+
+def files_visible_field(model: type[Model], name: str) -> type[Model] | None:
+    """
+    The model a name of `files_visible` of a route set of the model refers to: the related
+    model of its forward relation (a foreign key, a one-to-one or a many-to-many field),
+    else None.
+    """
+    try:
+        field = model._meta.get_field(name)
+    except FieldDoesNotExist:
+        return None
+    if not field.is_relation or field.auto_created:
+        return None
+    return field.related_model
+
+
+def files_visible_declarations():
+    """
+    The route classes that declare `files_visible`: not abstract, with a model. A route
+    class counts once it is defined, as for the default routes of the core.
+    """
+    from bazis.core.routes_abstract.jsonapi import JsonapiRouteBase
+
+    seen, pending = set(), [JsonapiRouteBase]
+    while pending:
+        for route_cls in pending.pop().__subclasses__():
+            if route_cls in seen:
+                continue
+            seen.add(route_cls)
+            pending.append(route_cls)
+            if (
+                getattr(route_cls, 'files_visible', None) is not None
+                and not getattr(route_cls, 'abstract', False)
+                and getattr(route_cls, 'model', None) is not None
+            ):
+                yield route_cls
+
+
+def files_visible_routes(files_model: type[Model]) -> list[tuple[type, tuple[str, ...]]]:
+    """
+    The route sets that make the files of `files_model` visible through their objects:
+    the declaring route classes with their names of `files_visible` that refer to
+    `files_model` (a string is not a tuple of names, `uploadable.E001`: it refers to none).
+    """
+    result = []
+    for route_cls in files_visible_declarations():
+        names = route_cls.files_visible
+        if not isinstance(names, tuple | list):
+            continue
+        names = tuple(
+            it for it in names if files_visible_field(route_cls.model, it) is files_model
+        )
+        if names:
+            result.append((route_cls, names))
+    return result
+
+
+def files_visible_q(files_model: type[Model], user) -> Q | None:
+    """
+    The files of `files_model` the user sees through the objects that reference them: the
+    files of the fields of `files_visible` of the objects each declaring route set shows
+    the user (its `restrict_queryset` for VIEW; all the objects if it does not restrict
+    them). None if no route set declares them.
+    """
+    conditions = []
+    for route_cls, names in files_visible_routes(files_model):
+        objects = route_cls.model.objects.all()
+        if restrict := getattr(route_cls, 'restrict_queryset', None):
+            objects = restrict(objects, CrudAccessAction.VIEW, user=user)
+        for name in names:
+            conditions.append(
+                Q(pk__in=objects.filter(**{f'{name}__isnull': False}).values(name))
+            )
+    return reduce(or_, conditions) if conditions else None
 
 
 class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
     """
     The uploaded files of the user: a user who is logged in uploads a file (he becomes its
-    `author`), lists and reads his own files. No file is changed or deleted through the
-    route. As the default route of the files, its `restrict_queryset` is also what the
-    other routes link and include (bazis 2.7): a user links and sees in `included` only
-    the files he uploaded (see AGENTS.md to widen it).
+    `author`), lists, reads and downloads his own files and the files of the objects he
+    sees through a route set that declares them in `files_visible`. No file is changed or
+    deleted through the route. As the default route of the files, its `restrict_queryset`
+    is also what the other routes link and include (bazis 2.7): `included` shows the files
+    he sees, a relationship links only the files he uploaded (`link=True`, bazis 2.16).
     """
 
     model = apps.get_model('uploadable.FileUpload')
@@ -118,23 +206,73 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
 
     @classmethod
     def restrict_queryset(
-        cls, qs: QuerySet, access_action: AccessAction, user=None, **kwargs
+        cls, qs: QuerySet, access_action: AccessAction, user=None, link: bool = False, **kwargs
     ) -> QuerySet:
         """
-        The files the user uploaded, for every action. Without a user (a route without a
-        user, e.g. called by the core for the relationships of another route) the
-        authenticated user of the request (`UserMixin.CTX_USER_REQUEST`); none for an
-        anonymous user.
+        The files the user uploaded and, to view, the files of the objects he sees through
+        a route set that declares them in `files_visible` (`files_visible_q`). A
+        relationship links only his own files (`link=True`, passed by the core when it
+        checks the linked objects: a visible file of another user is 422
+        `ERR_RELATION_LINK`). Without a user (a route without a user, e.g. called by the
+        core for the relationships of another route) the authenticated user of the request
+        (`UserMixin.CTX_USER_REQUEST`); none for an anonymous user.
         """
         if user is None:
             user = UserMixin.CTX_USER_REQUEST.get()
         if user is None or user.is_anonymous:
             return qs.none()
-        return super().restrict_queryset(qs, access_action, user=user, **kwargs).filter(author=user)
+        qs = super().restrict_queryset(qs, access_action, user=user, link=link, **kwargs)
+        own = Q(author=user)
+        if link or access_action != CrudAccessAction.VIEW:
+            return qs.filter(own)
+        if (visible := files_visible_q(qs.model, user)) is None:
+            return qs.filter(own)
+        return qs.filter(own | visible)
+
+    @http_get(
+        '/{item_id}/download/',
+        kind=RouteKind.OTHER,
+        response_class=StreamingResponse,
+        responses={200: {'content': {'application/octet-stream': {}}, 'description': 'The file'}},
+    )
+    def action_download(self, item_id: str, **kwargs):
+        """
+        The content of a file the user sees (`get_queryset`: his own files and the visible
+        ones), read from the storage: 404 for another file or a file missing from the
+        storage. Served as the media host serves it (`storages`): a raster image inline,
+        any other file as a download named after the file, with `nosniff` and a sandbox.
+        """
+        item = self.set_item(item_id)
+        try:
+            stream = item.file.open('rb')
+        except (OSError, ValueError):
+            raise HTTPException(status_code=404, detail=_('Item not found')) from None
+
+        content_type = served_content_type(item.file.name)
+        name = item.name or item.file.name.rsplit('/', 1)[-1]
+
+        def chunks():
+            try:
+                yield from stream.chunks(DOWNLOAD_CHUNK_SIZE)
+            finally:
+                stream.close()
+
+        return StreamingResponse(
+            chunks(),
+            media_type=content_type,
+            headers={
+                'Content-Disposition': content_disposition_header(
+                    content_type not in INLINE_CONTENT_TYPES, name
+                ),
+                'X-Content-Type-Options': 'nosniff',
+                'Content-Security-Policy': 'sandbox',
+                'Cache-Control': 'private, no-store',
+            },
+        )
 
     def get_queryset(self):
         """
-        The files of the user.
+        The files the user sees (`restrict_queryset` for VIEW).
         """
         return self.restrict_queryset(
             super().get_queryset(), CrudAccessAction.VIEW, user=self.inject.user
