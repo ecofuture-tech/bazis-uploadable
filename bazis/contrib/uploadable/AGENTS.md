@@ -282,9 +282,9 @@ scripts read its storage (the JWT in `localStorage`).
   foreign key to that model (or to another model of its app) is then a migration cycle,
   `CircularDependencyError` (`users.0001_initial` → `<app>.0001_initial` →
   `uploadable.0004_fileupload_author`): put the foreign key of the user in a second
-  migration of the users app (comment the field out, `makemigrations`, restore it,
-  `makemigrations users`; see "A foreign key of the user to a model of the project" in the
-  guide of bazis-users).
+  migration of the users app (comment the field out,
+  `makemigrations --skip-checks --noinput`, restore it, `makemigrations users --noinput`;
+  see "A foreign key of the user to a model of the project" in the guide of bazis-users).
 - Files are stored under `files/<model class name in lower case>/` with a hashed name.
 - The id of `FileUpload` is an integer: the route hides the files the user does not see,
   it does not rely on unguessable ids.
