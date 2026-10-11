@@ -5,6 +5,23 @@ its name, extension and author) and a JSON:API route that accepts the file as mu
 data. Other models can reference uploaded files with a foreign key to `uploadable.FileUpload`.
 Needs bazis-users and bazis-author: a file has an `author`, the user who uploaded it.
 
+### The sections
+
+Read a section with `package_guide("bazis-uploadable", "<section>")` when the step at hand
+needs it; `guide_search` finds the part of a section that answers a question. A product
+with files needs Setup, Access and Serving.
+
+| Section | Read it when |
+|---|---|
+| Setup | you install it: the apps, the storage, the size limit, the router |
+| Access | you decide who reads and links the files: the own files, `files_visible` on the route sets of the objects, linking files to objects, a subclass with a rule of its own, bazis-permit |
+| Upload | a client uploads a file: the multipart request and its response |
+| Download | a client reads a file with its token: `/{id}/download/` and its headers |
+| Files the server generates | the server stores a file (a PDF, an export): `create_for`, a PDF with non-Latin text |
+| Serving | you deploy: the media host, the headers, S3, private files and the public media URL |
+| Models | a model of files of your own, the fields, a migration cycle with the user model, the storage paths |
+| Rules | before you write the code, once |
+
 ## Setup
 
 - `BS_INSTALLED_APPS` includes `bazis.contrib.uploadable` (the model and its migrations:
