@@ -45,8 +45,7 @@ class MembersRouteBase(RestrictedQsRouteMixin, UserRequiredRouteBase):
 
     @classmethod
     def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
-        user = user or UserMixin.CTX_USER_REQUEST.get()
-        if user is None or user.is_anonymous:
+        if (user := UserMixin.authenticated_user(user)) is None:
             return qs.none()
         qs = super().restrict_queryset(qs, access_action, user=user, **kwargs)
         return qs.filter(cls.members_q(user)).distinct()

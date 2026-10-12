@@ -133,9 +133,9 @@ class FileRouteSet(FileUploadRouteSet):
     @classmethod
     def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
         # the same user for the own files and the shared ones
-        user = user or UserMixin.CTX_USER_REQUEST.get()
+        user = UserMixin.authenticated_user(user)
         own = super().restrict_queryset(qs, access_action, user=user, **kwargs)
-        if user is None or user.is_anonymous or kwargs.get('link'):
+        if user is None or kwargs.get('link'):
             return own
         return qs.filter(Q(pk__in=own.values('pk')) | Q(...))  # the shared files
 ```

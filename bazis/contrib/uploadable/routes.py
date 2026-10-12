@@ -233,11 +233,9 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
         checks the linked objects: a visible file of another user is 422
         `ERR_RELATION_LINK`). Without a user (a route without a user, e.g. called by the
         core for the relationships of another route) the authenticated user of the request
-        (`UserMixin.CTX_USER_REQUEST`); none for an anonymous user.
+        (`UserMixin.authenticated_user`); none for an anonymous user.
         """
-        if user is None:
-            user = UserMixin.CTX_USER_REQUEST.get()
-        if user is None or user.is_anonymous:
+        if (user := UserMixin.authenticated_user(user)) is None:
             return qs.none()
         qs = super().restrict_queryset(qs, access_action, user=user, link=link, **kwargs)
         own = Q(author=user)

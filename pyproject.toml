@@ -36,6 +36,8 @@ dependencies = [
     # restrict_queryset(link=True) of the relationship checks: only the own files link
     "bazis>=2.16.0",
     "bazis-author>=2.4.0",
+    # UserMixin.authenticated_user: the user restrict_queryset works for
+    "bazis-users>=2.9.0",
     "python-multipart>=0.0.18",
 ]
 
