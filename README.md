@@ -401,7 +401,10 @@ AWS_SECRET_ACCESS_KEY = 'your-secret-key'
 AWS_STORAGE_BUCKET_NAME = 'your-bucket-name'
 AWS_S3_REGION_NAME = 'us-east-1'
 AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
-AWS_DEFAULT_ACL = 'public-read'  # or None with signed URLs (AWS_QUERYSTRING_AUTH) for private files
+# private objects: the clients read them through /{id}/download/ or signed URLs;
+# 'public-read' only for a bucket of public files
+AWS_DEFAULT_ACL = None
+AWS_QUERYSTRING_AUTH = True
 ```
 
 ### MinIO (S3-compatible storage)
@@ -415,7 +418,8 @@ AWS_SECRET_ACCESS_KEY = 'minio-secret-key'
 AWS_STORAGE_BUCKET_NAME = 'uploads'
 AWS_S3_ENDPOINT_URL = 'http://minio:9000'
 AWS_S3_USE_SSL = False
-AWS_DEFAULT_ACL = 'public-read'
+AWS_DEFAULT_ACL = None  # private objects, as for S3
+AWS_QUERYSTRING_AUTH = True
 ```
 
 ### Google Cloud Storage
