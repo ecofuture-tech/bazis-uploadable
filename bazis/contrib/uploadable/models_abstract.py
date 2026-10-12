@@ -99,8 +99,7 @@ class FileUploadAbstract(AuthorMixin):
     def save(self, *args, **kwargs):
         if not self.name:
             self.name = os.path.basename(self.file.name)
-        _, self.extension = (os.path.splitext(self.name) + ('',))[:2]
-        self.extension = self.extension[1:]
+        self.extension = os.path.splitext(self.name)[1][1:]
         return super().save(*args, **kwargs)
 
     class Meta:
