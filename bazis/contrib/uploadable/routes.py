@@ -41,6 +41,7 @@ from bazis.core.routes_abstract.jsonapi import (
 from bazis.core.schemas import AccessAction, CrudAccessAction, CrudApiAction, SchemaFields
 from bazis.core.schemas.enums import RouteKind
 from bazis.core.utils.django_types import UploadFileDjango
+from bazis.core.utils.functools import inheritors
 
 from .storages import INLINE_CONTENT_TYPES, served_content_type
 
@@ -64,23 +65,34 @@ def files_visible_field(model: type[Model], name: str) -> type[Model] | None:
     return field.related_model
 
 
-def files_visible_declarations():
+def files_visible_declarations() -> list[type]:
     """
-    The route classes that declare `files_visible` in their own body: a subclass does not
-    inherit the declaration (it would make the files visible through every route class of
-    the model derived from it).
+    The route classes that declare `files_visible` in their own body, by module and name:
+    a subclass does not inherit the declaration (it would make the files visible through
+    every route class of the model derived from it).
     """
     from bazis.core.routes_abstract.jsonapi import JsonapiRouteBase
 
-    seen, pending = set(), [JsonapiRouteBase]
-    while pending:
-        for route_cls in pending.pop().__subclasses__():
-            if route_cls in seen:
-                continue
-            seen.add(route_cls)
-            pending.append(route_cls)
-            if 'files_visible' in vars(route_cls):
-                yield route_cls
+    return sorted(
+        (it for it in inheritors(JsonapiRouteBase) if 'files_visible' in vars(it)),
+        key=lambda it: (it.__module__, it.__qualname__),
+    )
+
+
+def files_visible_problem(route_cls) -> str | None:
+    """
+    Why the declaration of `files_visible` of a route class makes no file visible, or None:
+    it is on an abstract route class (or one without a model), or it is not a tuple of
+    field names (`uploadable.E001`).
+    """
+    names = route_cls.files_visible
+    if getattr(route_cls, 'abstract', False) or getattr(route_cls, 'model', None) is None:
+        return (
+            'is declared on an abstract route class (or one without a model): it is not inherited'
+        )
+    if not isinstance(names, tuple | list) or not all(isinstance(it, str) for it in names):
+        return f'is {names!r}, not a tuple of field names'
+    return None
 
 
 #: the declarations of `files_visible` by model of files, kept once the application is
@@ -99,10 +111,9 @@ def files_visible_cache_clear() -> None:
 def files_visible_routes(files_model: type[Model]) -> list[tuple[type, tuple[str, ...]]]:
     """
     The route sets that make the files of `files_model` visible through their objects:
-    the declaring route classes (not abstract, with a model) with their names of
-    `files_visible` that refer to `files_model` (a string is not a tuple of names,
-    `uploadable.E001`: it refers to none). Resolved once the application is loaded, every
-    time before.
+    the declaring route classes with their names of `files_visible` that refer to
+    `files_model` (a declaration with a problem, `uploadable.E001`, refers to none).
+    Resolved once the application is loaded, every time before.
     """
     from bazis.core.introspect import loaded_app
 
@@ -110,12 +121,13 @@ def files_visible_routes(files_model: type[Model]) -> list[tuple[type, tuple[str
         return cached
     result = []
     for route_cls in files_visible_declarations():
-        names, model = route_cls.files_visible, getattr(route_cls, 'model', None)
-        if getattr(route_cls, 'abstract', False) or model is None:
+        if files_visible_problem(route_cls):
             continue
-        if not isinstance(names, tuple | list):
-            continue
-        names = tuple(it for it in names if files_visible_field(model, it) is files_model)
+        names = tuple(
+            it
+            for it in route_cls.files_visible
+            if files_visible_field(route_cls.model, it) is files_model
+        )
         if names:
             result.append((route_cls, names))
     if loaded_app() is not None:

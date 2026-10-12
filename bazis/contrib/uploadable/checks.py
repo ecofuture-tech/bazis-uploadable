@@ -26,15 +26,12 @@ def files_visible_errors(route_cls) -> list[str]:
     `FileUploadRouteSet` or a subclass (its `restrict_queryset` makes them visible).
     """
     from .models_abstract import FileUploadAbstract
-    from .routes import FileUploadRouteSet, files_visible_field
+    from .routes import FileUploadRouteSet, files_visible_field, files_visible_problem
 
-    names = route_cls.files_visible
-    if getattr(route_cls, 'abstract', False) or getattr(route_cls, 'model', None) is None:
-        return ['is declared on an abstract route class (or one without a model): it is not inherited']
-    if not isinstance(names, tuple | list) or not all(isinstance(it, str) for it in names):
-        return [f'is {names!r}, not a tuple of field names']
+    if problem := files_visible_problem(route_cls):
+        return [problem]
     errors = []
-    for name in names:
+    for name in route_cls.files_visible:
         files_model = files_visible_field(route_cls.model, name)
         # not a model of files (e.g. a relation to ContentType, which has no default route)
         is_files = isinstance(files_model, type) and issubclass(files_model, FileUploadAbstract)

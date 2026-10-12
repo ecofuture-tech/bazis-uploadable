@@ -22,8 +22,8 @@ import = "bazis.contrib.uploadable.routes.FileUploadRouteSet"
 use_when = "the upload route: a logged-in user uploads, lists, reads and downloads (/{id}/download/) his own files and the visible ones; subclass it (default_route = True) for a rule of its own (Access)"
 
 [[extension_points]]
-name = "files_visible"
-import = "bazis.contrib.uploadable.routes.files_visible_routes"
+name = "JsonapiRouteBase.files_visible"
+import = "bazis.core.routes_abstract.jsonapi.JsonapiRouteBase"
 use_when = "files_visible = ('file',) on the route set of a model that references files: whoever sees its objects reads their files"
 
 [[extension_points]]
