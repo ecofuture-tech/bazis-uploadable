@@ -43,8 +43,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    # the plugin installs the triggers of the test database
-    "bazis-test-utils>=2.5.0",
+    # the plugin installs the triggers of the test database and resets the throttle counts
+    # before each test (the anonymous uploads are throttled)
+    "bazis-test-utils>=2.5.2",
     # the S3 storage of the package is tested against the real django-storages
     "django-storages[s3]>=1.14",
 ]

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from functools import partial, reduce
 from operator import or_
 
@@ -19,15 +20,17 @@ from django.apps import apps
 from django.conf import settings
 from django.core.exceptions import FieldDoesNotExist
 from django.db.models import Model, Q, QuerySet
+from django.utils import timezone
 from django.utils.http import content_disposition_header
 from django.utils.translation import gettext as _
 
-from fastapi import Form, HTTPException, Request
+from fastapi import Depends, Form, HTTPException, Request
 
 from starlette.responses import StreamingResponse
 
 from bazis.contrib.author.routes_abstract import AuthorRequiredRouteBase
 from bazis.contrib.users.models_abstract import UserMixin
+from bazis.contrib.users.service import get_user_from_token, get_user_optional, get_user_required
 from bazis.core.errors import JsonApiBazisError, JsonApiBazisException
 from bazis.core.routes_abstract.initial import http_get, http_post
 from bazis.core.routes_abstract.jsonapi import (
@@ -40,14 +43,55 @@ from bazis.core.routes_abstract.jsonapi import (
 )
 from bazis.core.schemas import AccessAction, CrudAccessAction, CrudApiAction, SchemaFields
 from bazis.core.schemas.enums import RouteKind
+from bazis.core.throttle import Throttle
 from bazis.core.utils.django_types import UploadFileDjango
 from bazis.core.utils.functools import inheritors
 
+from .signatures import HEAD_SIZE, SIGNATURES, signature_type
 from .storages import INLINE_CONTENT_TYPES, served_content_type
 
 
 #: the size of the chunks a download reads from the storage
 DOWNLOAD_CHUNK_SIZE = 64 * 1024
+
+#: the attributes of an anonymous upload its uploader reads in the response: not its URL
+ANONYMOUS_FIELDS = ('name', 'extension', 'size')
+
+
+def anonymous_uploads() -> bool:
+    """
+    Whether anonymous users upload files: `BAZIS_FILE_UPLOAD_ANONYMOUS` with a size limit
+    (`BAZIS_FILE_UPLOAD_MAX_SIZE`; without one they do not, `uploadable.E002`).
+    """
+    return settings.BAZIS_FILE_UPLOAD_ANONYMOUS and settings.BAZIS_FILE_UPLOAD_MAX_SIZE > 0
+
+
+def upload_user(user=Depends(get_user_from_token)):
+    """
+    The user of an upload: the user of the token, an anonymous user without one when
+    anonymous uploads are on (`anonymous_uploads`), else 401 as for the other routes.
+    """
+    if user is None and anonymous_uploads():
+        return get_user_optional(user)
+    return get_user_required(user)
+
+
+def anonymous_rate() -> str:
+    """
+    The rate of the anonymous uploads per IP address (`BAZIS_FILE_UPLOAD_ANONYMOUS_RATE`).
+    """
+    return settings.BAZIS_FILE_UPLOAD_ANONYMOUS_RATE
+
+
+class AnonymousThrottle(Throttle):
+    """
+    A throttle that counts only the requests of anonymous users: the uploads of a user who is
+    logged in are not limited.
+    """
+
+    def check(self, request: Request, user=None, scope: str | None = None) -> None:
+        if not getattr(user, 'is_authenticated', False):
+            super().check(request, user=user, scope=scope)
 
 
 def files_visible_field(model: type[Model], name: str) -> type[Model] | None:
@@ -182,13 +226,16 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
                 'size': None,
                 'extension': None,
             },
-            exclude={'author': None, 'author_updated': None},
+            exclude={'author': None, 'author_updated': None, 'uploaded_anonymously': None},
         )
     }
 
     @http_post(
         '/',
         status_code=201,
+        # known when the routes are imported: anonymous users may call it (`upload_user`)
+        public=anonymous_uploads() or None,
+        dependencies=[Depends(AnonymousThrottle(anonymous_rate, key='ip'))],
         endpoint_callbacks=[
             partial(meta_fields_addition, api_action=CrudApiAction.CREATE),
             partial(api_action_init, api_action=CrudApiAction.CREATE),
@@ -202,8 +249,16 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
         request: Request,
         file: UploadFileDjango,
         name: str | None = Form(None),
+        user=Depends(upload_user),
         **kwargs,
     ):
+        """
+        Uploads a file: the user becomes its author. An anonymous user (`anonymous_uploads`)
+        uploads only a file of `BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES` (by its content, 422
+        otherwise), stored with the extension of its type and without an author, and reads
+        back only its id and `ANONYMOUS_FIELDS`.
+        """
+        anonymous = not user.is_authenticated
         max_size = settings.BAZIS_FILE_UPLOAD_MAX_SIZE
         if max_size and (file.size or 0) > max_size:
             raise JsonApiBazisException(
@@ -216,6 +271,9 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
                 ),
                 status=413,
             )
+
+        if anonymous:
+            name = file.filename = self.anonymous_name(file, name)
 
         if not isinstance(file, UploadFileDjango):
             file.__class__ = UploadFileDjango
@@ -232,7 +290,45 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
 
         item_data = self.schema_defaults[CrudApiAction.CREATE].model_validate(request._json)
 
+        if anonymous:
+            # he does not see the file (`restrict_queryset`): it is answered as it is created
+            item = self.create(request._json, item_data)
+            item.only_fields = ANONYMOUS_FIELDS
+            return {'data': item}
         return super().action_create.func(self, request, item_data)
+
+    def hook_before_create(self, item):
+        """
+        An upload of an anonymous user is marked with its time (`uploaded_anonymously`).
+        """
+        super().hook_before_create(item)
+        if not self.inject.user.is_authenticated:
+            item.uploaded_anonymously = timezone.now()
+
+    @staticmethod
+    def anonymous_name(file, name: str | None) -> str:
+        """
+        The name of an anonymous upload: its name (or the name of the file) with the
+        extension of the type of its content, which must be one of
+        `BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES` (422 `ERR_FILE_TYPE`).
+        """
+        head = file.file.read(HEAD_SIZE)
+        file.file.seek(0)
+        types = settings.BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES
+        if (content_type := signature_type(head, types)) is None:
+            raise JsonApiBazisException(
+                JsonApiBazisError(
+                    detail=_('The file is not of the types %(types)s')
+                    % {'types': ', '.join(types)},
+                    loc=('body', 'file'),
+                    code='ERR_FILE_TYPE',
+                    title=_('File type not allowed'),
+                    status=422,
+                ),
+                status=422,
+            )
+        stem = os.path.splitext(os.path.basename(name or file.filename or ''))[0] or 'file'
+        return f'{stem}.{SIGNATURES[content_type][0]}'
 
     @classmethod
     def restrict_queryset(

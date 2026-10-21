@@ -76,3 +76,24 @@ def check_files_visible(app_configs, **kwargs):
                 )
             )
     return messages
+
+
+@register()
+def check_anonymous_uploads(app_configs, **kwargs):
+    """
+    Anonymous uploads (`BAZIS_FILE_UPLOAD_ANONYMOUS`) need a size limit: without
+    `BAZIS_FILE_UPLOAD_MAX_SIZE` anonymous users upload nothing (`uploadable.E002`).
+    """
+    from django.conf import settings
+
+    if settings.BAZIS_FILE_UPLOAD_ANONYMOUS and not settings.BAZIS_FILE_UPLOAD_MAX_SIZE:
+        return [
+            Error(
+                'BAZIS_FILE_UPLOAD_ANONYMOUS is on without BAZIS_FILE_UPLOAD_MAX_SIZE: '
+                'anonymous users upload nothing.',
+                hint='Set BS_BAZIS_FILE_UPLOAD_MAX_SIZE (bytes) and limit the request body '
+                'size on the reverse proxy.',
+                id='uploadable.E002',
+            )
+        ]
+    return []
