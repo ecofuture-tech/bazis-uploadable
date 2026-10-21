@@ -21,7 +21,9 @@ from typing import Annotated
 from pydantic import Field
 
 
-#: the id of an uploaded file (`uploadable.FileUpload`) in the body of an action: the
+#: the id of an uploaded file (`uploadable.FileUpload`) in the body of an action: the id the
+#: upload answered, for a guest the token of his upload (`anonymous_token`). The
 #: `x-relation` of its JSON schema tells the clients to upload it (`list[UploadedFileId]`
-#: for several files); the action takes the files with `FileUpload.objects.anonymous(ids)`
-UploadedFileId = Annotated[int, Field(json_schema_extra={'x-relation': 'uploadable.file_upload'})]
+#: has it in `items`); the action takes the files of a guest with
+#: `FileUpload.objects.anonymous(tokens)`
+UploadedFileId = Annotated[str, Field(json_schema_extra={'x-relation': 'uploadable.file_upload'})]

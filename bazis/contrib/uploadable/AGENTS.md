@@ -186,8 +186,8 @@ only through `files_visible`.
 ## Anonymous uploads
 
 Guests upload files for a public action (a request form with photos): the action takes
-the ids of the uploads in its body and attaches them to the object it creates. Off by
-default; with it off the route is as before (401 without a token).
+the ids the uploads answered in its body and attaches them to the object it creates. Off
+by default; with it off the route is as before (401 without a token).
 
 - `BS_BAZIS_FILE_UPLOAD_ANONYMOUS=true` turns it on, only with a size limit:
   `BS_BAZIS_FILE_UPLOAD_MAX_SIZE` > 0, otherwise guests upload nothing and `bazis_doctor`
@@ -203,23 +203,29 @@ default; with it off the route is as before (401 without a token).
   and uploads any type, as before. `BAZIS_THROTTLE_ENABLED` off turns the limit off.
 - `BS_BAZIS_FILE_UPLOAD_ANONYMOUS_TTL` (hours, default 24): how long an upload can be
   attached; then `uploadable_clean_anonymous` deletes it unless something references it.
-- A guest reads back only the id, `name`, `extension` and `size` (no `file`, the URL) and
+- A guest reads back a token as the id (`anonymous_token`: the id of the file signed with
+  the time by `SECRET_KEY`), `name`, `extension` and `size` (no `file`, the URL), and
   reads no file afterwards: the list, the item and the download are 401 without a token,
   and for the users an anonymous upload is nobody's (404) until an object references it
   and `files_visible` shows it to the readers of that object. It has no `author` and
   `uploaded_anonymously` is its time.
-- An invalid or expired token is 401, not a guest.
+- An invalid or expired bearer token is 401, not a guest; the token of a user who is no
+  longer active (or deleted) is a guest when anonymous uploads are on.
+- A name or a file name with a control character (NUL...) is 422 `ERR_FILE_NAME`
+  (`/name`, `/file`), for the users too, before anything is stored.
 - For the clients: `anonymous_uploads()` (`bazis.contrib.uploadable.routes`: the setting
   with a size limit) and `BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES` are what a frontend contract
   exports (bazis-front: `capabilities.uploadable.anonymous`, `anonymous_types`, beside
   `max_size`), so a public form offers the upload only when guests can upload.
 
-A public form with files: the body takes the ids as `UploadedFileId`
-(`bazis.contrib.uploadable.schemas`, an integer whose JSON schema has
-`x-relation: uploadable.file_upload`, so a client knows to upload a file), the action
-takes the files with `FileUpload.objects.anonymous(ids)` (no author, at most TTL old; the
-files of users and the expired ones are left out) and references them; the route set of
-the referencing model declares `files_visible` for the staff who read them:
+A public form with files: the body takes the ids the uploads answered as `UploadedFileId`
+(`bazis.contrib.uploadable.schemas`, a string whose JSON schema has
+`x-relation: uploadable.file_upload`, so a client knows to upload a file). For a guest the
+action takes the files with `FileUpload.objects.anonymous(data.photos)`: the tokens that
+are valid and at most TTL old, of files without an author uploaded at most TTL ago; a bare
+id, a forged or expired token and the files of users are left out. For a user it takes
+his own files by their ids. It references them; the route set of the referencing model
+declares `files_visible` for the staff who read them:
 
 ```python
 from bazis.contrib.uploadable.schemas import UploadedFileId
@@ -240,7 +246,8 @@ def action_submit(self, data: SubmitRequest, **kwargs):
     if user is None:
         photos = list(files.anonymous(data.photos))
     else:
-        photos = list(files.filter(pk__in=data.photos, author=user))
+        ids = [it for it in data.photos if it.isdigit()]
+        photos = list(files.filter(pk__in=ids, author=user))
     if len(photos) != len(set(data.photos)):
         raise JsonApiBazisException([JsonApiBazisError(
             _('A photo is missing or expired'), loc=('photos',), code='ERR_PHOTO',
@@ -254,24 +261,29 @@ Deploy:
 
 - Run `python manage.py uploadable_clean_anonymous` periodically (cron, or a schedule of
   bazis-bg): it deletes the anonymous uploads older than the TTL that no object references
-  (any foreign key, one-to-one or many-to-many field to the model of the files), the rows
-  and the files in the storage. A reference the database does not know (an id in a JSON
-  field, a generic relation) does not keep a file.
+  (any foreign key, one-to-one or many-to-many field to the model of the files), each row
+  only if it is still so when deleted, then its file in the storage. A failure (a row, a
+  file) is written to stderr, the others are deleted and the command exits with an error.
+  A reference the database does not know (an id in a JSON field, a generic relation) does
+  not keep a file.
 - Limit the request body on the reverse proxy (nginx `client_max_body_size` a little
   above `BAZIS_FILE_UPLOAD_MAX_SIZE` for the upload path): the application checks the size
   after the whole body is received (spooled to disk), so without the proxy limit a guest
-  still sends bodies of any size.
-- The limit counts by `request.client.host`: behind a proxy, uvicorn or gunicorn must take
-  the client from `X-Forwarded-For` (`--proxy-headers --forwarded-allow-ips` with the
-  addresses of the proxy, `forwarded_allow_ips` of gunicorn), never `*` on a server
-  clients reach directly; otherwise all guests share the count of the proxy.
+  still sends bodies of any size (a limit of the core before the body is read is planned
+  for bazis 2.21+).
+- The rate counts by `request.client.host`: behind a proxy, the proxy sends the address
+  of the client (nginx `proxy_set_header X-Forwarded-For $remote_addr`, not the header the
+  client sent) and uvicorn or gunicorn trusts only the proxy
+  (`--proxy-headers --forwarded-allow-ips <proxy>`, `forwarded_allow_ips` of gunicorn),
+  never `*` on a server clients reach directly; otherwise all guests share the count of
+  the proxy, or pick their address.
 - Serve the media from a separate origin (Serving): the upload is a valid image by its
   first bytes, not by the rest of its content.
 
-The ids are integers: a guest can send the ids of the fresh anonymous uploads of others,
-and the action attaches them to his object (the readers of his object then see them; the
-guest himself reads nothing). Attach anonymous uploads only to objects whose readers may
-see what guests sent (the staff who process the requests).
+Only the guest who uploaded a file has its token: within the TTL he can attach it again
+(to another request; a token is not used up). Changing `SECRET_KEY` invalidates the tokens
+of the uploads not attached yet. Attach anonymous uploads only to objects whose readers
+may see what guests sent (the staff who process the requests).
 
 ## Download
 
@@ -386,7 +398,8 @@ scripts read its storage (the JWT in `localStorage`).
 - `FileUploadAbstract` (`bazis.contrib.uploadable.models_abstract`): `AuthorMixin` of
   bazis-author (`author`, `author_updated`) and the fields `file`, `name`, `extension`,
   `uploaded_anonymously` (the time a guest uploaded it, else None); its manager `objects`
-  has `create_for` (above), `anonymous(ids)` and `anonymous_expired()` (Anonymous uploads).
+  has `create_for` (above), `anonymous(tokens)` and `anonymous_expired()` (Anonymous
+  uploads).
   `save()` fills `name` from the file name if it is empty, and `extension` from `name`
   (without the dot). `size` reads the size from the storage and is 0 if the file is missing.
   A model of the project that subclasses it gets the author fields and
@@ -401,7 +414,8 @@ scripts read its storage (the JWT in `localStorage`).
   see "A foreign key of the user to a model of the project" in the guide of bazis-users).
 - Files are stored under `files/<model class name in lower case>/` with a hashed name.
 - The id of `FileUpload` is an integer: the route hides the files the user does not see,
-  it does not rely on unguessable ids.
+  it does not rely on unguessable ids; a guest attaches his uploads by their signed token
+  (Anonymous uploads).
 
 ## Rules
 
@@ -410,4 +424,4 @@ scripts read its storage (the JWT in `localStorage`).
 - Deleting a `FileUpload` object does not delete the file from the storage
   (`uploadable_clean_anonymous` deletes both for the expired anonymous uploads).
 - Anonymous uploads: always with a size limit, a proxy body limit, the clean-up scheduled
-  and `anonymous(ids)` only for a guest; never return their `file` to a guest.
+  and `anonymous(tokens)` only for a guest (a user: his own files by id).

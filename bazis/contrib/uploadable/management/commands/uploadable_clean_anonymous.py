@@ -12,31 +12,53 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
-
 from django.apps import apps
-from django.core.management.base import BaseCommand
-from django.db import transaction
+from django.core.management.base import BaseCommand, CommandError
+from django.db import DatabaseError, transaction
 
-from bazis.contrib.uploadable.models_abstract import FileUploadAbstract
+from bazis.contrib.uploadable.models_abstract import FileUploadAbstract, FileUploadManager
 
 
 class Command(BaseCommand):
     help = (
         'Deletes the anonymous uploads older than BAZIS_FILE_UPLOAD_ANONYMOUS_TTL hours that '
-        'no object references, with their files in the storage.'
+        'no object references, with their files in the storage. Exits with an error if '
+        'one could not be deleted (the others are).'
     )
 
     def handle(self, *args, **options):
-        deleted = 0
+        deleted, failed = 0, []
         for model in apps.get_models():
             if not issubclass(model, FileUploadAbstract):
                 continue
-            for item in model.objects.anonymous_expired().only('pk', 'file'):
-                # still expired and not referenced when it is deleted; its file is deleted
-                # once the deletion is committed
-                with transaction.atomic():
-                    if model.objects.anonymous_expired().filter(pk=item.pk).delete()[0]:
-                        transaction.on_commit(partial(item.file.storage.delete, item.file.name))
-                        deleted += 1
+            manager = model._default_manager
+            if not isinstance(manager, FileUploadManager):
+                self.stderr.write(
+                    f'{model._meta.label}: its default manager is not a FileUploadManager'
+                )
+                failed.append(model._meta.label)
+                continue
+            for item in manager.anonymous_expired().only('pk', 'file'):
+                try:
+                    # deleted only if still expired and not referenced; its file once the
+                    # deletion is committed
+                    with transaction.atomic():
+                        if manager.anonymous_expired().filter(pk=item.pk).delete()[0]:
+                            transaction.on_commit(lambda item=item: self.file_delete(item, failed))
+                            deleted += 1
+                except DatabaseError as error:
+                    self.stderr.write(f'{model._meta.label} {item.pk}: {error}')
+                    failed.append(item.pk)
         self.stdout.write(f'Deleted {deleted} anonymous uploads.')
+        if failed:
+            raise CommandError(f'{len(failed)} anonymous uploads or files were not deleted.')
+
+    def file_delete(self, item, failed: list):
+        """
+        Deletes the file of a deleted upload from the storage; a failure is reported.
+        """
+        try:
+            item.file.storage.delete(item.file.name)
+        except Exception as error:
+            self.stderr.write(f'{item.file.name}: {error}')
+            failed.append(item.file.name)

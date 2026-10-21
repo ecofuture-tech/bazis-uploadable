@@ -221,11 +221,14 @@ and `bazis_doctor` reports `uploadable.E002`):
 | `BAZIS_FILE_UPLOAD_ANONYMOUS_RATE` | `'60/hour'` | per IP address (429); users are not limited |
 | `BAZIS_FILE_UPLOAD_ANONYMOUS_TTL` | `24` | hours an upload can be attached |
 
-A guest reads back the id, `name`, `extension` and `size` (no URL) and reads no file
-afterwards. A public action takes the ids in its body as `list[UploadedFileId]`
-(`bazis.contrib.uploadable.schemas`, JSON schema `x-relation: uploadable.file_upload`),
-attaches `FileUpload.objects.anonymous(ids)` (no author, not expired) to the object it
-creates, and the staff read them through `files_visible`. Schedule
+A guest reads back a signed token as the id, `name`, `extension` and `size` (no URL) and
+reads no file afterwards. A public action takes the ids in its body as
+`list[UploadedFileId]` (`bazis.contrib.uploadable.schemas`, a string, JSON schema
+`x-relation: uploadable.file_upload`); for a guest it attaches
+`FileUpload.objects.anonymous(tokens)` (valid tokens of files without an author, not
+expired; a bare id is never taken), for a user `filter(pk__in=ids, author=user)`, and the
+staff read them through `files_visible`. A name with a control character is 422
+`ERR_FILE_NAME`. Schedule
 `python manage.py uploadable_clean_anonymous`: it deletes the expired anonymous uploads
 nothing references, with their files. Limit the request body on the reverse proxy, and
 behind it let uvicorn trust the proxy (`--proxy-headers --forwarded-allow-ips`) so the rate

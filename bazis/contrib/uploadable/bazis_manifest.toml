@@ -35,12 +35,12 @@ use_when = "FileUpload.objects.create_for(author, name, content) stores a file t
 [[extension_points]]
 name = "FileUploadManager.anonymous"
 import = "bazis.contrib.uploadable.models_abstract.FileUploadManager"
-use_when = "FileUpload.objects.anonymous(ids) in a public action: the fresh anonymous uploads it attaches to the object it creates"
+use_when = "FileUpload.objects.anonymous(tokens) in a public action of a guest: the fresh anonymous uploads of the tokens (the ids the uploads answered) it attaches to the object it creates"
 
 [[extension_points]]
 name = "UploadedFileId"
 import = "bazis.contrib.uploadable.schemas.UploadedFileId"
-use_when = "the id of an uploaded file in the body of an action (list[UploadedFileId] for several): its x-relation tells the client to upload it"
+use_when = "the id an upload answered (a string: for a guest the signed token of his upload) in the body of an action, list[UploadedFileId] for several: its x-relation tells the client to upload it"
 
 [[extension_points]]
 name = "uploadable_clean_anonymous"
@@ -103,4 +103,7 @@ check = "uploadable.E002"
 text = "behind a proxy the anonymous rate counts the proxy unless uvicorn trusts it (--forwarded-allow-ips)"
 
 [[pitfalls]]
-text = "schedule uploadable_clean_anonymous, and call anonymous(ids) only for a guest: the ids are integers, a guest can send the ids of the uploads of others"
+text = "schedule uploadable_clean_anonymous; take the files of a guest with anonymous(tokens) (a bare id is never taken), those of a user with filter(pk__in=ids, author=user)"
+
+[[pitfalls]]
+text = "changing SECRET_KEY invalidates the tokens of the anonymous uploads not attached yet"

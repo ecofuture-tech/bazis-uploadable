@@ -15,16 +15,23 @@
 """
 Anonymous uploads (`BAZIS_FILE_UPLOAD_ANONYMOUS`): a guest uploads an image of the allowed
 types with a size limit and a rate limit per IP address, reads back no URL and no file, and
-a public action attaches it with `FileUpload.objects.anonymous(ids)`;
+a public action attaches it by its token with `FileUpload.objects.anonymous(tokens)`;
 `uploadable_clean_anonymous` deletes the expired ones nothing references.
 """
 
+import subprocess
+import sys
+import time
 from datetime import timedelta
 from functools import partial
+from pathlib import Path
 
 from django.apps import apps
 from django.core.checks import run_checks
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
+from django.core.signing import TimestampSigner, b62_encode
+from django.db import DatabaseError
+from django.db.models.signals import pre_delete
 from django.utils import timezone
 
 from pydantic import TypeAdapter, ValidationError
@@ -33,6 +40,7 @@ import pytest
 from bazis_test_utils.utils import get_api_client, parallel
 
 from bazis.contrib.uploadable.conf import Settings
+from bazis.contrib.uploadable.models_abstract import ANONYMOUS_SALT, anonymous_token
 from bazis.contrib.uploadable.schemas import UploadedFileId
 
 from .test_uploadable import FILES, client_of, make_user, upload
@@ -54,6 +62,28 @@ def files():
     return apps.get_model('uploadable.FileUpload').objects
 
 
+def pk_of(response) -> str:
+    """The id of the upload of a guest: the token he reads back is signed."""
+    return TimestampSigner(salt=ANONYMOUS_SALT).unsign(response.json()['data']['id'])
+
+
+def raw_upload(client, filename: str, name: str | None = None):
+    """A multipart upload written by hand: httpx does not send any file name."""
+    parts = (
+        []
+        if name is None
+        else [f'--B\r\nContent-Disposition: form-data; name="name"\r\n\r\n{name}\r\n'.encode()]
+    )
+    parts.append(
+        f'--B\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+        'Content-Type: image/png\r\n\r\n'.encode()
+        + PNG
+        + b'\r\n--B--\r\n'
+    )
+    headers = client.headers | {'Content-Type': 'multipart/form-data; boundary=B'}
+    return client.client.post(FILES, content=b''.join(parts), headers=headers)
+
+
 def guest_upload(sample_app, filename='photo.png', content=PNG, content_type='image/png', **data):
     return client_of(sample_app).post(
         FILES, data=data, files={'file': (filename, content, content_type)}
@@ -69,7 +99,9 @@ def test_a_guest_uploads_an_image_and_reads_back_no_url(sample_app, anonymous):
     assert (data['type'], data['relationships']) == ('uploadable.file_upload', {})
     # no `file` (its URL); the name keeps the extension of the type of the content
     assert data['attributes'] == {'name': 'Front door.png', 'extension': 'png', 'size': len(PNG)}
-    item = files().get(pk=data['id'])
+    # the id is the token of the upload, its signed id
+    item = files().get(pk=pk_of(response))
+    assert data['id'] == anonymous_token(item.pk) != str(item.pk)
     assert item.author is None
     assert item.uploaded_anonymously is not None
     assert item.file.name.endswith('.png')
@@ -175,7 +207,7 @@ def test_the_anonymous_uploads_are_throttled_by_ip(sample_app, anonymous):
 
 @pytest.mark.django_db(transaction=True)
 def test_a_guest_reads_no_file(sample_app, anonymous):
-    item = guest_upload(sample_app).json()['data']['id']
+    item = pk_of(guest_upload(sample_app))
     guest = client_of(sample_app)
 
     assert guest.get(FILES).status_code == 401
@@ -230,33 +262,86 @@ def test_the_uploads_of_users_and_guests_do_not_mix(sample_app, anonymous):
         assert (item.uploaded_anonymously is None) == (item.author is not None)
 
 
+class PastSigner(TimestampSigner):
+    """Signs as 25 hours ago."""
+
+    def timestamp(self):
+        return b62_encode(int(time.time() - 25 * 3600))
+
+
 @pytest.mark.django_db(transaction=True)
-def test_anonymous_takes_only_the_fresh_anonymous_uploads(sample_app, anonymous):
+def test_anonymous_takes_the_fresh_uploads_of_the_tokens(sample_app, anonymous):
     owner = make_user('owner')
-    fresh, expired = (guest_upload(sample_app).json()['data']['id'] for _ in range(2))
-    files().filter(pk=expired).update(uploaded_anonymously=timezone.now() - timedelta(hours=25))
+    fresh, expired, again = (guest_upload(sample_app).json()['data']['id'] for _ in range(3))
+    expired_pk = TimestampSigner(salt=ANONYMOUS_SALT).unsign(expired)
+    files().filter(pk=expired_pk).update(uploaded_anonymously=timezone.now() - timedelta(hours=25))
+    fresh_pk = TimestampSigner(salt=ANONYMOUS_SALT).unsign(fresh)
+    again_pk = TimestampSigner(salt=ANONYMOUS_SALT).unsign(again)
     own = upload(client_of(sample_app, owner)).json()['data']['id']
     generated = files().create_for(None, 'report.txt', 'The report.').pk
 
-    ids = [fresh, expired, own, generated, 0]
-    assert [str(it.pk) for it in files().anonymous(ids)] == [str(fresh)]
-    assert list(files().anonymous([])) == []
+    def taken(tokens):
+        return sorted(str(it.pk) for it in files().anonymous(tokens))
+
+    assert taken([fresh]) == [fresh_pk]
+    # a token is not used up: the guest who has it attaches it again
+    assert taken([fresh, fresh]) == [fresh_pk]
+    assert taken([fresh]) == [fresh_pk]
+    assert taken([]) == []
+    # never by a bare id, a forged or expired token, nor a file of a user or of the server
+    assert taken([fresh_pk, int(again_pk), str(own), own]) == []
+    assert taken([fresh[:-1] + ('A' if fresh[-1] != 'A' else 'B')]) == []
+    assert taken([TimestampSigner(salt='another').sign(again_pk)]) == []
+    assert taken([PastSigner(salt=ANONYMOUS_SALT).sign(again_pk)]) == []
+    assert taken([anonymous_token(own), anonymous_token(generated)]) == []
+    assert taken([expired]) == []
 
     anonymous.BAZIS_FILE_UPLOAD_ANONYMOUS_TTL = 26
-    assert {str(it.pk) for it in files().anonymous(ids)} == {str(fresh), str(expired)}
+    assert taken([fresh, expired, PastSigner(salt=ANONYMOUS_SALT).sign(again_pk)]) == sorted(
+        [fresh_pk, expired_pk, again_pk]
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize('field', ['name', 'file'])
+def test_a_name_with_a_control_character_is_refused(sample_app, anonymous, media, field):
+    owner = make_user('owner')
+    for client in (client_of(sample_app), client_of(sample_app, owner)):
+        if field == 'name':
+            response = raw_upload(client, 'photo.png', name='photo\x00.png')
+        else:
+            response = raw_upload(client, 'photo\x00.png\x07')
+
+        assert response.status_code == 422, response.text
+        error = response.json()['errors'][0]
+        assert (error['code'], error['source']['pointer']) == ('ERR_FILE_NAME', f'/{field}')
+    assert not files().exists()
+    # nothing reached the storage
+    assert not any(it.is_file() for it in media.rglob('*'))
+    assert raw_upload(client_of(sample_app), 'photo.png', name='Photo 1.png').status_code == 201
+
+
+def expire(*items):
+    files().filter(pk__in=[it.pk for it in items]).update(
+        uploaded_anonymously=timezone.now() - timedelta(hours=25)
+    )
 
 
 @pytest.mark.django_db(transaction=True)
 def test_the_clean_deletes_the_expired_anonymous_uploads_nothing_references(sample_app, anonymous):
     Note, Board = apps.get_model('notes.Note'), apps.get_model('notes.Board')  # noqa: N806
     owner = make_user('owner')
-    expired, noted, boarded, fresh = (
-        files().get(pk=guest_upload(sample_app).json()['data']['id']) for _ in range(4)
+    expired, noted, boarded, unboarded, fresh = (
+        files().get(pk=pk_of(guest_upload(sample_app))) for _ in range(5)
     )
-    files().exclude(pk=fresh.pk).update(uploaded_anonymously=timezone.now() - timedelta(hours=25))
-    # the public action attached two of them (a foreign key and a many-to-many field)
+    expire(expired, noted, boarded, unboarded)
+    # the public action attached two of them (a foreign key and a many-to-many field); a
+    # board that no longer has a file does not keep it
     Note.objects.create(title='Leak', attachment=noted)
     Board.objects.create(title='Leaks').files.add(boarded)
+    board = Board.objects.create(title='Gone')
+    board.files.add(unboarded)
+    board.files.remove(unboarded)
     own = files().get(pk=upload(client_of(sample_app, owner)).json()['data']['id'])
     generated = files().create_for(None, 'report.txt', 'The report.')
     storage = expired.file.storage
@@ -267,16 +352,96 @@ def test_the_clean_deletes_the_expired_anonymous_uploads_nothing_references(samp
     kept = {noted.pk, boarded.pk, fresh.pk, own.pk, generated.pk}
     assert set(files().values_list('pk', flat=True)) == kept
     assert not storage.exists(expired.file.name)
+    assert not storage.exists(unboarded.file.name)
     for item in files().all():
         assert storage.exists(item.file.name)
 
 
-def test_uploaded_file_id_marks_the_files():
-    marker = {'x-relation': 'uploadable.file_upload'}
+@pytest.mark.django_db(transaction=True)
+def test_the_clean_goes_on_after_a_failure(sample_app, anonymous, monkeypatch, capsys):
+    """
+    A row that fails to be deleted and a file that fails to be deleted from the storage are
+    reported; the others are deleted and the command exits with an error.
+    """
+    stuck, lost, gone = (files().get(pk=pk_of(guest_upload(sample_app))) for _ in range(3))
+    expire(stuck, lost, gone)
+    storage_class = type(lost.file.storage)
+    storage_delete = storage_class.delete
 
-    assert TypeAdapter(UploadedFileId).json_schema() == {'type': 'integer', **marker}
-    assert TypeAdapter(list[UploadedFileId]).json_schema()['items'] == {
-        'type': 'integer',
-        **marker,
-    }
-    assert TypeAdapter(list[UploadedFileId]).validate_python(['12', 13]) == [12, 13]
+    def refuse(sender, instance, **kwargs):
+        if instance.pk == stuck.pk:
+            raise DatabaseError('the row is locked')
+
+    def delete(storage, name):
+        if name == lost.file.name:
+            raise OSError('the storage is down')
+        storage_delete(storage, name)
+
+    monkeypatch.setattr(storage_class, 'delete', delete)
+    pre_delete.connect(refuse, sender=type(stuck))
+    try:
+        with pytest.raises(CommandError, match='2 anonymous uploads'):
+            call_command('uploadable_clean_anonymous')
+    finally:
+        pre_delete.disconnect(refuse, sender=type(stuck))
+
+    errors = capsys.readouterr().err
+    assert 'the row is locked' in errors and lost.file.name in errors
+    assert set(files().values_list('pk', flat=True)) == {stuck.pk}
+    storage = gone.file.storage
+    assert not storage.exists(gone.file.name)
+    # the row of the lost file is deleted, its file stays (reported)
+    assert storage.exists(lost.file.name) and storage.exists(stuck.file.name)
+
+
+def test_uploaded_file_id_marks_the_files():
+    marker = {'type': 'string', 'x-relation': 'uploadable.file_upload'}
+
+    assert TypeAdapter(UploadedFileId).json_schema() == marker
+    assert TypeAdapter(list[UploadedFileId]).json_schema()['items'] == marker
+
+
+def test_the_users_read_the_fields_of_2_7(sample_app):
+    """
+    `uploaded_anonymously` is in none of the schemas of the route of the files.
+    """
+    schemas = sample_app.openapi()['components']['schemas']
+    names = [it for it in schemas if it.startswith('___uploadable__file_upload__schema_')]
+    assert names
+    for name in names:
+        assert 'uploaded_anonymously' not in schemas[name]['properties'], name
+    retrieve = [it for it in names if '_retrieve__' in it and it.endswith('__Attributes')]
+    assert [set(schemas[it]['properties']) for it in retrieve] == [
+        {'file', 'name', 'extension', 'size'}
+    ]
+
+
+@pytest.mark.parametrize(
+    'environ,public',
+    [
+        ({'BS_BAZIS_FILE_UPLOAD_ANONYMOUS': 'true', 'BS_BAZIS_FILE_UPLOAD_MAX_SIZE': '1000'}, True),
+        ({'BS_BAZIS_FILE_UPLOAD_ANONYMOUS': 'true', 'BS_BAZIS_FILE_UPLOAD_MAX_SIZE': '0'}, False),
+    ],
+)
+def test_the_upload_is_public_with_anonymous_uploads(monkeypatch, environ, public):
+    """
+    `public` of the upload route (read when the routes are imported, in a process of its
+    own) is `anonymous_uploads()`: on with a size limit.
+    """
+    for key, value in environ.items():
+        monkeypatch.setenv(key, value)
+    code = (
+        'import django; django.setup()\n'
+        'from bazis.contrib.uploadable.routes import FileUploadRouteSet, anonymous_uploads\n'
+        'route = FileUploadRouteSet.endpoint_make(FileUploadRouteSet.action_create)\n'
+        'print(FileUploadRouteSet.route_meta(route)["public"], anonymous_uploads())\n'
+    )
+    monkeypatch.setenv('DJANGO_SETTINGS_MODULE', 'sample.settings')
+    result = subprocess.run(
+        [sys.executable, '-c', code],
+        cwd=Path(__file__).resolve().parent.parent / 'sample',
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.split()[-2:] == [str(public), str(public)]

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import unicodedata
 from functools import partial, reduce
 from operator import or_
 
@@ -41,22 +42,20 @@ from bazis.core.routes_abstract.jsonapi import (
     item_data_typing,
     meta_fields_addition,
 )
+from bazis.core.routes_abstract.jsonapi.callbacks import JsonApiResponse
 from bazis.core.schemas import AccessAction, CrudAccessAction, CrudApiAction, SchemaFields
 from bazis.core.schemas.enums import RouteKind
 from bazis.core.throttle import Throttle
 from bazis.core.utils.django_types import UploadFileDjango
 from bazis.core.utils.functools import inheritors
 
+from .models_abstract import anonymous_token
 from .signatures import HEAD_SIZE, SIGNATURES, signature_type
 from .storages import INLINE_CONTENT_TYPES, served_content_type
 
 
 #: the size of the chunks a download reads from the storage
 DOWNLOAD_CHUNK_SIZE = 64 * 1024
-
-#: the attributes of an anonymous upload its uploader reads in the response: not its URL
-ANONYMOUS_FIELDS = ('name', 'extension', 'size')
-
 
 def anonymous_uploads() -> bool:
     """
@@ -256,9 +255,11 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
         Uploads a file: the user becomes its author. An anonymous user (`anonymous_uploads`)
         uploads only a file of `BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES` (by its content, 422
         otherwise), stored with the extension of its type and without an author, and reads
-        back only its id and `ANONYMOUS_FIELDS`.
+        back its token (`anonymous_token`) as its id, `name`, `extension` and `size`: not
+        its URL. A name with a control character is 422 `ERR_FILE_NAME`.
         """
         anonymous = not user.is_authenticated
+        self.names_check(file, name)
         max_size = settings.BAZIS_FILE_UPLOAD_MAX_SIZE
         if max_size and (file.size or 0) > max_size:
             raise JsonApiBazisException(
@@ -293,9 +294,41 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
         if anonymous:
             # he does not see the file (`restrict_queryset`): it is answered as it is created
             item = self.create(request._json, item_data)
-            item.only_fields = ANONYMOUS_FIELDS
-            return {'data': item}
+            return JsonApiResponse(
+                {
+                    'data': {
+                        'type': self.model.get_resource_label(),
+                        'id': anonymous_token(item.pk),
+                        'attributes': {
+                            'name': item.name,
+                            'extension': item.extension,
+                            'size': item.size,
+                        },
+                        'relationships': {},
+                    }
+                },
+                status_code=201,
+            )
         return super().action_create.func(self, request, item_data)
+
+    @staticmethod
+    def names_check(file, name: str | None):
+        """
+        The name and the name of the file have no control character (a NUL fails the
+        storage): 422 `ERR_FILE_NAME` before anything is stored.
+        """
+        for value, field in ((name, 'name'), (file.filename, 'file')):
+            if value and any(unicodedata.category(it) == 'Cc' for it in value):
+                raise JsonApiBazisException(
+                    JsonApiBazisError(
+                        detail=_('The name has a control character'),
+                        loc=('body', field),
+                        code='ERR_FILE_NAME',
+                        title=_('Invalid file name'),
+                        status=422,
+                    ),
+                    status=422,
+                )
 
     def hook_before_create(self, item):
         """
