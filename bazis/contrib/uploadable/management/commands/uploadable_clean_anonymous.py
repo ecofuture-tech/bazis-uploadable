@@ -40,10 +40,14 @@ class Command(BaseCommand):
                 continue
             for item in manager.anonymous_expired().only('pk', 'file'):
                 try:
-                    # deleted only if still expired and not referenced; its file once the
-                    # deletion is committed
+                    # locked while still expired and not referenced (a reference inserted
+                    # meanwhile waits for the deletion and fails, the deletion does not
+                    # touch it), then deleted only if still so; its file once the deletion
+                    # is committed
                     with transaction.atomic():
-                        if manager.anonymous_expired().filter(pk=item.pk).delete()[0]:
+                        still = manager.anonymous_expired().filter(pk=item.pk)
+                        locked = still.select_for_update().values_list('pk', flat=True)
+                        if list(locked) and still.delete()[0]:
                             transaction.on_commit(lambda item=item: self.file_delete(item, failed))
                             deleted += 1
                 except DatabaseError as error:

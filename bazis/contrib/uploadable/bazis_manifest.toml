@@ -106,4 +106,4 @@ text = "behind a proxy the anonymous rate counts the proxy unless uvicorn trusts
 text = "schedule uploadable_clean_anonymous; take the files of a guest with anonymous(tokens) (a bare id is never taken), those of a user with filter(pk__in=ids, author=user)"
 
 [[pitfalls]]
-text = "changing SECRET_KEY invalidates the tokens of the anonymous uploads not attached yet"
+text = "changing SECRET_KEY invalidates the tokens of the anonymous uploads not attached yet, unless the old key stays in SECRET_KEY_FALLBACKS"

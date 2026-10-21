@@ -233,7 +233,7 @@ staff read them through `files_visible`. A name with a control character is 422
 nothing references, with their files. Limit the request body on the reverse proxy, and
 behind it let uvicorn trust the proxy (`--proxy-headers --forwarded-allow-ips`) so the rate
 counts the clients. A frontend contract exports `anonymous_uploads()` and the types
-(bazis-front `capabilities.uploadable.anonymous`, `anonymous_types`). The recipe and the
+(bazis-front 0.9+: `capabilities.uploadable.anonymous`, `anonymous_types`). The recipe and the
 risks are in the section "Anonymous uploads" of `bazis/contrib/uploadable/AGENTS.md`.
 
 ### Serving Uploaded Files

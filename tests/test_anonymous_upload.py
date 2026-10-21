@@ -303,14 +303,18 @@ def test_anonymous_takes_the_fresh_uploads_of_the_tokens(sample_app, anonymous):
 
 
 @pytest.mark.django_db(transaction=True)
-@pytest.mark.parametrize('field', ['name', 'file'])
-def test_a_name_with_a_control_character_is_refused(sample_app, anonymous, media, field):
+@pytest.mark.parametrize(
+    'field,char',
+    # the characters of the category Cc: NUL, BEL, tab, line feed, DEL, NEL (C1)
+    [('name', it) for it in '\x00\x07\t\n\x7f\x85'] + [('file', it) for it in '\x00\t\x7f\x85'],
+)
+def test_a_name_with_a_control_character_is_refused(sample_app, anonymous, media, field, char):
     owner = make_user('owner')
     for client in (client_of(sample_app), client_of(sample_app, owner)):
         if field == 'name':
-            response = raw_upload(client, 'photo.png', name='photo\x00.png')
+            response = raw_upload(client, 'photo.png', name=f'photo{char}.png')
         else:
-            response = raw_upload(client, 'photo\x00.png\x07')
+            response = raw_upload(client, f'photo{char}.png')
 
         assert response.status_code == 422, response.text
         error = response.json()['errors'][0]
@@ -355,6 +359,37 @@ def test_the_clean_deletes_the_expired_anonymous_uploads_nothing_references(samp
     assert not storage.exists(unboarded.file.name)
     for item in files().all():
         assert storage.exists(item.file.name)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_the_clean_does_not_delete_a_file_referenced_meanwhile(sample_app, anonymous, monkeypatch):
+    """
+    A reference that appears after the expired uploads are selected keeps the upload: it is
+    deleted only if it is still not referenced when it is locked and deleted (a deletion by
+    its id would set the reference to null).
+    """
+    from bazis.contrib.uploadable.models_abstract import FileUploadManager
+
+    Note = apps.get_model('notes.Note')  # noqa: N806
+    item = files().get(pk=pk_of(guest_upload(sample_app)))
+    expire(item)
+    expired = FileUploadManager.anonymous_expired
+    calls = []
+
+    def anonymous_expired(manager):
+        calls.append(manager)
+        if len(calls) == 2:  # the selection is made, the deletion begins
+            Note.objects.create(title='Late', attachment=item)
+        return expired(manager)
+
+    monkeypatch.setattr(FileUploadManager, 'anonymous_expired', anonymous_expired)
+
+    call_command('uploadable_clean_anonymous')
+
+    assert len(calls) >= 2
+    assert files().filter(pk=item.pk).exists()
+    assert Note.objects.get().attachment_id == item.pk
+    assert item.file.storage.exists(item.file.name)
 
 
 @pytest.mark.django_db(transaction=True)

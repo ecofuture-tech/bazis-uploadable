@@ -215,8 +215,8 @@ by default; with it off the route is as before (401 without a token).
   (`/name`, `/file`), for the users too, before anything is stored.
 - For the clients: `anonymous_uploads()` (`bazis.contrib.uploadable.routes`: the setting
   with a size limit) and `BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES` are what a frontend contract
-  exports (bazis-front: `capabilities.uploadable.anonymous`, `anonymous_types`, beside
-  `max_size`), so a public form offers the upload only when guests can upload.
+  exports (bazis-front 0.9+: `capabilities.uploadable.anonymous`, `anonymous_types`,
+  beside `max_size`), so a public form offers the upload only when guests can upload.
 
 A public form with files: the body takes the ids the uploads answered as `UploadedFileId`
 (`bazis.contrib.uploadable.schemas`, a string whose JSON schema has
@@ -261,8 +261,9 @@ Deploy:
 
 - Run `python manage.py uploadable_clean_anonymous` periodically (cron, or a schedule of
   bazis-bg): it deletes the anonymous uploads older than the TTL that no object references
-  (any foreign key, one-to-one or many-to-many field to the model of the files), each row
-  only if it is still so when deleted, then its file in the storage. A failure (a row, a
+  (any foreign key, one-to-one or many-to-many field to the model of the files): each row
+  locked and deleted only if it is still so (a reference inserted meanwhile waits and
+  fails), then its file in the storage. A failure (a row, a
   file) is written to stderr, the others are deleted and the command exits with an error.
   A reference the database does not know (an id in a JSON field, a generic relation) does
   not keep a file.
@@ -282,7 +283,8 @@ Deploy:
 
 Only the guest who uploaded a file has its token: within the TTL he can attach it again
 (to another request; a token is not used up). Changing `SECRET_KEY` invalidates the tokens
-of the uploads not attached yet. Attach anonymous uploads only to objects whose readers
+of the uploads not attached yet, unless the old key stays in `SECRET_KEY_FALLBACKS` (the
+tokens it signed stay valid). Attach anonymous uploads only to objects whose readers
 may see what guests sent (the staff who process the requests).
 
 ## Download
