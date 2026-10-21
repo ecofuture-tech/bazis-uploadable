@@ -97,6 +97,8 @@ Abstract model for storing uploaded files.
 - `name` — filename (optional, automatically filled from file name)
 - `extension` — file extension (optional, automatically extracted)
 - `author`, `author_updated` — the user who uploaded the file (`AuthorMixin` of bazis-author)
+- `uploaded_anonymously` — the time a guest uploaded it (None for the files of users and of
+  the server; a model of your own needs `makemigrations` with 2.8)
 
 **Properties**:
 
@@ -136,7 +138,8 @@ Ready-to-use route for file uploading via multipart/form-data.
 - Automatically includes `size` and `extension` fields in schema
 - Supports optional `name` field for renaming files
 - Returns data in JSON:API format
-- Requires a user; the uploader is the `author` of the file
+- Requires a user; the uploader is the `author` of the file (guests upload only with
+  anonymous uploads on, see below)
 
 **Endpoints**:
 
@@ -204,6 +207,34 @@ identifier). The route sets of the models that reference uploaded files need no 
 their own (the sample route set `notes.routes.NoteRouteSet` has none). A file the server
 generates is stored with `FileUpload.objects.create_for(author, name, content)`; see
 `bazis/contrib/uploadable/AGENTS.md` (also for a recipe of a PDF with reproducible fonts).
+
+### Anonymous Uploads
+
+Off by default. `BAZIS_FILE_UPLOAD_ANONYMOUS = True` lets guests (no token) upload files for
+a public form, only with `BAZIS_FILE_UPLOAD_MAX_SIZE` set (without it guests upload nothing
+and `bazis_doctor` reports `uploadable.E002`):
+
+| Setting | Default | |
+|---|---|---|
+| `BAZIS_FILE_UPLOAD_ANONYMOUS` | `False` | read when the routes are imported |
+| `BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES` | `['image/jpeg', 'image/png', 'image/webp']` | recognized by the content, not the name or `Content-Type` (422 `ERR_FILE_TYPE`) |
+| `BAZIS_FILE_UPLOAD_ANONYMOUS_RATE` | `'60/hour'` | per IP address (429); users are not limited |
+| `BAZIS_FILE_UPLOAD_ANONYMOUS_TTL` | `24` | hours an upload can be attached |
+
+A guest reads back a signed token as the id, `name`, `extension` and `size` (no URL) and
+reads no file afterwards. A public action takes the ids in its body as
+`list[UploadedFileId]` (`bazis.contrib.uploadable.schemas`, a string, JSON schema
+`x-relation: uploadable.file_upload`); for a guest it attaches
+`FileUpload.objects.anonymous(tokens)` (valid tokens of files without an author, not
+expired; a bare id is never taken), for a user `filter(pk__in=ids, author=user)`, and the
+staff read them through `files_visible`. A name with a control character is 422
+`ERR_FILE_NAME`. Schedule
+`python manage.py uploadable_clean_anonymous`: it deletes the expired anonymous uploads
+nothing references, with their files. Limit the request body on the reverse proxy, and
+behind it let uvicorn trust the proxy (`--proxy-headers --forwarded-allow-ips`) so the rate
+counts the clients. A frontend contract exports `anonymous_uploads()` and the types
+(bazis-front 0.9+: `capabilities.uploadable.anonymous`, `anonymous_types`). The recipe and the
+risks are in the section "Anonymous uploads" of `bazis/contrib/uploadable/AGENTS.md`.
 
 ### Serving Uploaded Files
 

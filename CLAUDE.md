@@ -9,7 +9,9 @@ his files and the files of the objects he sees through a route set that declares
 `restrict_queryset` is also what the other routes include, and with `link=True` (only the
 own files, Bazis 2.16) what they link. An S3 storage writes uploads as downloads unless
 they are raster images; the media host must be a separate origin (see
-`bazis/contrib/uploadable/AGENTS.md`).
+`bazis/contrib/uploadable/AGENTS.md`). `BAZIS_FILE_UPLOAD_ANONYMOUS` (off by default, 2.8)
+lets guests upload images for a public action (`FileUpload.objects.anonymous(tokens)`,
+`UploadedFileId`, `manage.py uploadable_clean_anonymous`).
 
 The package code is in `bazis/contrib/uploadable`, the sample project used by the tests is in `sample/`,
 the tests are in `tests/`.

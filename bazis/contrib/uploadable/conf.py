@@ -14,9 +14,12 @@
 
 from django.utils.translation import gettext_lazy as _
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
+from bazis.core.utils.rates import parse_rate
 from bazis.core.utils.schemas import BazisSettings
+
+from .signatures import SIGNATURES
 
 
 class Settings(BazisSettings):
@@ -24,6 +27,37 @@ class Settings(BazisSettings):
     BAZIS_FILE_UPLOAD_MAX_SIZE: int = Field(
         0, title=_('Maximum size of an uploaded file in bytes (0 - no limit)'), ge=0
     )
+    # anonymous uploads (a public form with files): off unless the size is limited
+    BAZIS_FILE_UPLOAD_ANONYMOUS: bool = Field(False, title=_('Anonymous users upload files'))
+    BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES: list[str] = Field(
+        ['image/jpeg', 'image/png', 'image/webp'],
+        title=_('Types of the anonymous uploads, recognized by their content'),
+    )
+    BAZIS_FILE_UPLOAD_ANONYMOUS_TTL: int = Field(
+        24, title=_('Hours an anonymous upload can be attached to an object'), ge=1
+    )
+    BAZIS_FILE_UPLOAD_ANONYMOUS_RATE: str = Field(
+        '60/hour', title=_('Request rate of the anonymous uploads per IP address')
+    )
+
+    @field_validator('BAZIS_FILE_UPLOAD_ANONYMOUS_TYPES')
+    @classmethod
+    def anonymous_types_check(cls, value: list[str]) -> list[str]:
+        """
+        The types whose signature the package recognizes (`signatures.SIGNATURES`).
+        """
+        if unknown := [it for it in value if it not in SIGNATURES]:
+            raise ValueError(f'{unknown} are not among {sorted(SIGNATURES)}')
+        return value
+
+    @field_validator('BAZIS_FILE_UPLOAD_ANONYMOUS_RATE')
+    @classmethod
+    def anonymous_rate_check(cls, value: str) -> str:
+        """
+        A rate of bazis.core.throttle (`'60/hour'`): the anonymous uploads are always limited.
+        """
+        parse_rate(value)
+        return value
 
 
 settings = Settings()

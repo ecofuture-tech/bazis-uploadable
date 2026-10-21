@@ -12,6 +12,7 @@ solves = [
     "show a file to whoever sees an object that references it (files_visible on its route set)",
     "download a file through a route that checks the access",
     "store a file the server generates (a PDF, a report) for an owner (create_for)",
+    "let guests upload images for a public form (BAZIS_FILE_UPLOAD_ANONYMOUS, off by default)",
 ]
 requires = ["bazis", "bazis-users", "bazis-author"]
 pairs_well = ["bazis-permit"]
@@ -30,6 +31,21 @@ use_when = "files_visible = ('file',) on the route set of a model that reference
 name = "FileUploadManager.create_for"
 import = "bazis.contrib.uploadable.models_abstract.FileUploadManager"
 use_when = "FileUpload.objects.create_for(author, name, content) stores a file the server generated"
+
+[[extension_points]]
+name = "FileUploadManager.anonymous"
+import = "bazis.contrib.uploadable.models_abstract.FileUploadManager"
+use_when = "FileUpload.objects.anonymous(tokens) in a public action of a guest: the fresh anonymous uploads of the tokens (the ids the uploads answered) it attaches to the object it creates"
+
+[[extension_points]]
+name = "UploadedFileId"
+import = "bazis.contrib.uploadable.schemas.UploadedFileId"
+use_when = "the id an upload answered (a string: for a guest the signed token of his upload) in the body of an action, list[UploadedFileId] for several: its x-relation tells the client to upload it"
+
+[[extension_points]]
+name = "uploadable_clean_anonymous"
+import = "bazis.contrib.uploadable.management.commands.uploadable_clean_anonymous.Command"
+use_when = "manage.py uploadable_clean_anonymous on a schedule: deletes the expired anonymous uploads nothing references, with their files"
 
 [[extension_points]]
 name = "FileUploadAbstract"
@@ -78,3 +94,16 @@ text = "BAZIS_STORAGE_FILE_UPLOAD is read once, when the models are loaded"
 
 [[pitfalls]]
 text = "deleting a FileUpload object does not delete the file from the storage"
+
+[[pitfalls]]
+text = "anonymous uploads need BAZIS_FILE_UPLOAD_MAX_SIZE (without it guests upload nothing) and a body limit on the reverse proxy"
+check = "uploadable.E002"
+
+[[pitfalls]]
+text = "behind a proxy the anonymous rate counts the proxy unless uvicorn trusts it (--forwarded-allow-ips)"
+
+[[pitfalls]]
+text = "schedule uploadable_clean_anonymous; take the files of a guest with anonymous(tokens) (a bare id is never taken), those of a user with filter(pk__in=ids, author=user)"
+
+[[pitfalls]]
+text = "changing SECRET_KEY invalidates the tokens of the anonymous uploads not attached yet, unless the old key stays in SECRET_KEY_FALLBACKS"

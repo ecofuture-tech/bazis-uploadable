@@ -13,11 +13,16 @@
 # limitations under the License.
 
 import os
+from collections.abc import Iterable
+from datetime import timedelta
 
 from django.conf import settings
 from django.core.files.base import ContentFile, File
 from django.core.files.storage import FileSystemStorage
+from django.core.signing import BadSignature, TimestampSigner
 from django.db import models
+from django.db.models import Exists, OuterRef
+from django.utils import timezone
 from django.utils.functional import cached_property
 from django.utils.translation import gettext_lazy as _
 
@@ -43,10 +48,69 @@ def get_file_upload_storage():
     return FileStorage()
 
 
+#: the salt of the tokens of the anonymous uploads (`anonymous_token`)
+ANONYMOUS_SALT = 'bazis.contrib.uploadable.anonymous'
+
+
+def anonymous_token(pk) -> str:
+    """
+    The token an anonymous upload is answered and attached with: its id signed with the
+    time (`TimestampSigner` of `SECRET_KEY`), so that only the guest who uploaded it knows
+    it (the ids are integers).
+    """
+    return TimestampSigner(salt=ANONYMOUS_SALT).sign(str(pk))
+
+
+def anonymous_expiry():
+    """
+    The time before which an anonymous upload is expired: `BAZIS_FILE_UPLOAD_ANONYMOUS_TTL`
+    hours ago.
+    """
+    return timezone.now() - timedelta(hours=settings.BAZIS_FILE_UPLOAD_ANONYMOUS_TTL)
+
+
 class FileUploadManager(models.Manager):
     """
-    The manager of the uploaded files, with `create_for` for the files the server writes.
+    The manager of the uploaded files, with `create_for` for the files the server writes and
+    `anonymous` for the files anonymous users uploaded.
     """
+
+    def anonymous(self, tokens: Iterable[str]):
+        """
+        The anonymous uploads of `tokens` (`anonymous_token`, the ids the guest read back)
+        that a public action may attach to the object it creates: uploaded by an anonymous
+        user (no author) at most `BAZIS_FILE_UPLOAD_ANONYMOUS_TTL` hours ago. A token that
+        is forged or expired, a bare id, the files of users and the expired files are left
+        out.
+        """
+        signer = TimestampSigner(salt=ANONYMOUS_SALT)
+        max_age = timedelta(hours=settings.BAZIS_FILE_UPLOAD_ANONYMOUS_TTL)
+        pks = []
+        for token in tokens:
+            try:
+                pks.append(signer.unsign(str(token), max_age=max_age))
+            except BadSignature:  # also SignatureExpired
+                continue
+        return self.filter(
+            pk__in=pks, author__isnull=True, uploaded_anonymously__gte=anonymous_expiry()
+        )
+
+    def anonymous_expired(self):
+        """
+        The expired anonymous uploads that no object references (by any foreign key,
+        one-to-one or many-to-many field to the model): what `uploadable_clean_anonymous`
+        deletes.
+        """
+        qs = self.filter(author__isnull=True, uploaded_anonymously__lt=anonymous_expiry())
+        for rel in self.model._meta.get_fields(include_hidden=True):
+            # the reverse relations; a many-to-many one is the foreign key of its through model
+            if rel.auto_created and not rel.concrete and not rel.many_to_many:
+                qs = qs.filter(
+                    ~Exists(
+                        rel.related_model._base_manager.filter(**{rel.field.name: OuterRef('pk')})
+                    )
+                )
+        return qs
 
     def create_for(self, author, name: str, content: bytes | str | File):
         """
@@ -82,6 +146,10 @@ class FileUploadAbstract(AuthorMixin):
     )
     name = models.CharField(_('Name'), max_length=255, blank=True, null=True)
     extension = models.CharField(_('Extension'), max_length=50, blank=True, null=True)
+    #: when an anonymous user uploaded it (None for the files of users and of the server)
+    uploaded_anonymously = models.DateTimeField(
+        _('Uploaded anonymously'), blank=True, null=True, editable=False
+    )
 
     @cached_property
     def size(self) -> int | None:
