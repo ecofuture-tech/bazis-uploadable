@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from bazis.contrib.author.checks import check_routes_author
-from bazis.core.introspect import validate_manifest
+from bazis.core.introspect import read_manifest, validate_manifest
 
 
 def test_manifest_is_valid():
@@ -23,3 +23,9 @@ def test_manifest_is_valid():
 def test_bundled_route_does_not_let_a_client_set_the_author(sample_app):
     # the sample project registers bazis.contrib.uploadable.router
     assert check_routes_author(None) == []
+
+
+def test_manifest_names_the_checks():
+    pitfalls = read_manifest('bazis.contrib.uploadable')['pitfalls']
+    checks = {it['check'] for it in pitfalls if 'check' in it}
+    assert checks == {'uploadable.E001', 'uploadable.E002', 'uploadable.W003'}

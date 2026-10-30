@@ -139,13 +139,15 @@ Ready-to-use route for file uploading via multipart/form-data.
 - Supports optional `name` field for renaming files
 - Returns data in JSON:API format
 - Requires a user; the uploader is the `author` of the file (guests upload only with
-  anonymous uploads on, see below)
+  anonymous uploads on, and read only the files of public objects, see below)
 
 **Endpoints**:
 
 - **POST /** — upload a new file
 - **GET /**, **GET /{id}/** — the files of the user and the visible ones (others are 404)
 - **GET /{id}/download/** — the content of such a file, with the access check
+- without a token, **GET /{id}/** and **GET /{id}/download/** serve the files of public
+  objects (others are 404), the list is 401
 
 **Usage example**:
 
@@ -204,7 +206,17 @@ links and what `included` shows. A user links only his own files (Bazis 2.16):
 `ERR_RELATION_LINK` if he sees it, else with `403` `ERR_RELATION_ACCESS`, and
 `?include=<field>` leaves out the files he does not see (the relationship keeps the
 identifier). The route sets of the models that reference uploaded files need no checks of
-their own (the sample route set `notes.routes.NoteRouteSet` has none). A file the server
+their own (the sample route set `notes.routes.NoteRouteSet` has none).
+
+Guests (no token) read and download the files of public objects (2.9): a file of
+`files_visible` of a route set that serves its item without a user (a registered
+`UserRouteBase`, not `UserRequiredRouteBase`), for the objects its `restrict_queryset`
+returns for an anonymous user (all of them if it does not override it: `bazis_doctor`
+warns `uploadable.W003`). Nothing else is declared, so upgrading makes those files public;
+the list stays 401, any other file is 404, the requests of guests are limited by
+`BAZIS_THROTTLE_PUBLIC` per IP address. `anonymous_files()` tells a frontend contract
+whether guests read files. See "Files of public objects" in
+`bazis/contrib/uploadable/AGENTS.md`. A file the server
 generates is stored with `FileUpload.objects.create_for(author, name, content)`; see
 `bazis/contrib/uploadable/AGENTS.md` (also for a recipe of a PDF with reproducible fonts).
 
@@ -222,7 +234,7 @@ and `bazis_doctor` reports `uploadable.E002`):
 | `BAZIS_FILE_UPLOAD_ANONYMOUS_TTL` | `24` | hours an upload can be attached |
 
 A guest reads back a signed token as the id, `name`, `extension` and `size` (no URL) and
-reads no file afterwards. A public action takes the ids in its body as
+reads no file afterwards, unless an object public to guests references it. A public action takes the ids in its body as
 `list[UploadedFileId]` (`bazis.contrib.uploadable.schemas`, a string, JSON schema
 `x-relation: uploadable.file_upload`); for a guest it attaches
 `FileUpload.objects.anonymous(tokens)` (valid tokens of files without an author, not

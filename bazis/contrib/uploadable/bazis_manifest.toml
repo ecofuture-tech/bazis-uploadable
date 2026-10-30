@@ -10,6 +10,7 @@ solves = [
     "reference uploaded files from other models",
     "keep each user's uploads private to him (the author of a file)",
     "show a file to whoever sees an object that references it (files_visible on its route set)",
+    "let guests read and download the files of the objects a route set shows them without a user (files_visible on a public route set)",
     "download a file through a route that checks the access",
     "store a file the server generates (a PDF, a report) for an owner (create_for)",
     "let guests upload images for a public form (BAZIS_FILE_UPLOAD_ANONYMOUS, off by default)",
@@ -20,7 +21,7 @@ pairs_well = ["bazis-permit"]
 [[extension_points]]
 name = "FileUploadRouteSet"
 import = "bazis.contrib.uploadable.routes.FileUploadRouteSet"
-use_when = "the upload route: a logged-in user uploads, lists, reads and downloads (/{id}/download/) his own files and the visible ones; subclass it (default_route = True) for a rule of its own (Access)"
+use_when = "the upload route: a logged-in user uploads, lists, reads and downloads (/{id}/download/) his own files and the visible ones, a guest reads and downloads the files of public objects; subclass it (default_route = True) for a rule of its own (Access)"
 
 [[extension_points]]
 name = "JsonapiRouteBase.files_visible"
@@ -79,6 +80,10 @@ check = "uploadable.E001"
 
 [[pitfalls]]
 text = "files_visible follows the objects, not the field permissions: declare only the fields whose files every reader may read"
+
+[[pitfalls]]
+text = "a route set whose item serves guests makes public the files of files_visible of the objects its restrict_queryset gives an anonymous user: without restrict_queryset, of all its objects"
+check = "uploadable.W003"
 
 [[pitfalls]]
 text = "do not declare permit_public = True on the routes of the files: they restrict the files themselves"

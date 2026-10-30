@@ -102,7 +102,8 @@ def test_anonymous_user_uploads_and_reads_nothing(sample_app, media):
     client = client_of(sample_app)
     assert upload(client).status_code == 401
     assert client.get(FILES).status_code == 401
-    assert client.get(f'{FILES}{item}/').status_code == 401
+    # the item is public (2.9): a file of no public object is 404, as a missing one
+    assert client.get(f'{FILES}{item}/').status_code == 404
     assert apps.get_model('uploadable.FileUpload').objects.count() == 1
 
 

@@ -16,7 +16,7 @@ from django.apps import apps
 from django.db.models import Q
 
 from bazis.contrib.users.models_abstract import UserMixin
-from bazis.contrib.users.routes_abstract import UserRequiredRouteBase
+from bazis.contrib.users.routes_abstract import UserRequiredRouteBase, UserRouteBase
 from bazis.core.routes_abstract.jsonapi import RestrictedQsRouteMixin
 from bazis.core.schemas import CrudAccessAction
 
@@ -81,3 +81,29 @@ class BoardRouteSet(MembersRouteBase):
     @classmethod
     def members_q(cls, user) -> Q:
         return Q(members=user)
+
+
+class PosterRouteSet(RestrictedQsRouteMixin, UserRouteBase):
+    """
+    The posters of a public catalog, read by anyone (the user is optional): a guest reads
+    the published posters and their photo (`files_visible`: bazis-uploadable serves the
+    files of the objects a route set that serves guests shows them), a user also the
+    drafts. Its `restrict_queryset` is what a guest sees (without it every poster and its
+    photo would be public, `uploadable.W003`). Only read: the server writes the posters.
+    """
+
+    model = apps.get_model('notes.Poster')
+    actions = ['action_list', 'action_retrieve']
+    files_visible = ('photo',)
+
+    @classmethod
+    def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
+        qs = super().restrict_queryset(qs, access_action, user=user, **kwargs)
+        if UserMixin.authenticated_user(user) is None:
+            return qs.filter(published=True)
+        return qs
+
+    def get_queryset(self):
+        return self.restrict_queryset(
+            super().get_queryset(), CrudAccessAction.VIEW, user=self.inject.user
+        )
