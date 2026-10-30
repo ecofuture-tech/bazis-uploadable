@@ -105,8 +105,9 @@ def check_public_files(app_configs, **kwargs):
     A route set that serves anonymous users (`route_serves_anonymous`) and declares
     `files_visible` without restricting its objects (no `restrict_queryset` of its own)
     makes the files of all its objects public, guests read them (`uploadable.W003`),
-    unless it says that its objects are public (`permit_public = True`). Runs when the
-    application is loaded.
+    unless it says that its objects are public (`permit_public = True`: the convention of
+    bazis-permit, `permit.W002`, read by its name without depending on bazis-permit). Runs
+    when the application is loaded.
     """
     from bazis.core.introspect import loaded_app
 

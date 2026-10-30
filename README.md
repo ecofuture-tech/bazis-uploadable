@@ -212,7 +212,11 @@ Guests (no token) read and download the files of public objects (2.9): a file of
 `files_visible` of a route set that serves its item without a user (a registered
 `UserRouteBase`, not `UserRequiredRouteBase`), for the objects its `restrict_queryset`
 returns for an anonymous user (all of them if it does not override it: `bazis_doctor`
-warns `uploadable.W003`). Nothing else is declared, so upgrading makes those files public;
+warns `uploadable.W003`). A route set that requires the user by a dependency of its own
+(not `get_user_required`) counts as serving guests: if its `restrict_queryset` fails for
+an anonymous user, its files stay private and a WARNING is logged; require the user with
+`get_user_required` or return `qs.none()` for a guest. Nothing else is declared, so
+upgrading makes those files public;
 the list stays 401, any other file is 404, the requests of guests are limited by
 `BAZIS_THROTTLE_PUBLIC` per IP address. `anonymous_files()` tells a frontend contract
 whether guests read files. See "Files of public objects" in

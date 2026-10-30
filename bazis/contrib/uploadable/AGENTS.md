@@ -141,9 +141,20 @@ class PosterRouteSet(RestrictedQsRouteMixin, UserRouteBase):   # the user is opt
   of the route sets that already serve guests. `bazis_doctor` warns
   (`uploadable.W003`) for such a route set without `restrict_queryset` of its own: the
   files of all its objects are public. Restrict its objects for a guest (none if they are
-  private), require a user, or declare `permit_public = True` if all of them are public.
-  With bazis-permit the roles for anonymous users decide (`PermitRouteBase` overrides
-  `restrict_queryset`).
+  private), require a user, or declare `permit_public = True` if all of them are public
+  (the convention of bazis-permit, `permit.W002`: read by its name, bazis-uploadable does
+  not depend on bazis-permit). With bazis-permit the roles for anonymous users decide
+  (`PermitRouteBase` overrides `restrict_queryset`).
+- A route set that requires the user by a dependency of its own (not `get_user_required`)
+  is public for the files: its `restrict_queryset` gets the anonymous user. If it fails
+  for him (e.g. `qs.filter(owner=user)`), its files are not public and a WARNING is
+  logged (`<module>.<class>.restrict_queryset failed for an anonymous user`); the files of
+  the other route sets stay public. Require the user with `get_user_required`, or return
+  `qs.none()` when `not user.is_authenticated`. `anonymous_files()` still counts such a
+  route set (it tells the declarations, not what its `restrict_queryset` returns).
+- The item of `FileUploadRouteSet` and its subclasses is always public (`cls_init`
+  declares it over a `public` a subclass sets; the dependencies a subclass declares
+  stay): a subclass keeps guests out with its `restrict_queryset`.
 - A guest reads the item (`/{id}/`) and the download (`/{id}/download/`) of the route of
   the files and `included` of the public routes (`?include=photo`); never the list
   (401), never a link (`restrict_queryset` is empty for him with `link=True` and for any

@@ -22,22 +22,24 @@ any other file is 404, as one that does not exist. The sample: `notes.Poster` wi
 
 from django.apps import apps
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 
 import pytest
 
 from bazis.contrib.uploadable.checks import check_public_files
 from bazis.contrib.uploadable.models import FileUpload
 from bazis.contrib.uploadable.routes import (
+    AnonymousThrottle,
     FileUploadRouteSet,
     anonymous_files,
+    files_public_q,
     files_visible_cache_clear,
     route_serves_anonymous,
 )
 from bazis.contrib.users import get_anonymous_user_model
 from bazis.contrib.users.routes_abstract import UserRequiredRouteBase, UserRouteBase
-from bazis.contrib.users.service import get_user_required
-from bazis.core.routes_abstract.initial import inject_make
+from bazis.contrib.users.service import get_user_from_token, get_user_required
+from bazis.core.routes_abstract.initial import inject_make, route_declare
 from bazis.core.routes_abstract.jsonapi import RestrictedQsRouteMixin
 from bazis.core.routing import BazisRoute
 from bazis.core.schemas import CrudAccessAction
@@ -101,12 +103,15 @@ def poster_route(monkeypatch, caches):
     model, restored after the test; the declarations of `files_visible` the test adds
     (`monkeypatch`) are removed with it.
     """
-    monkeypatch.setattr(Poster(), '_default_route', Poster().get_default_route())
+    for model in (Poster(), Memo(), FileUpload):
+        monkeypatch.setattr(model, '_default_route', model.get_default_route())
     made = []
 
-    def make(base, files_visible=None, **attrs):
+    def make(base, files_visible=None, model=None, **attrs):
         made.append(base)
-        route_cls = type(f'PosterTest{len(made)}RouteSet', (base,), {'model': Poster(), **attrs})
+        attrs.setdefault('model', model or Poster())
+        attrs.setdefault('__module__', __name__)
+        route_cls = type(f'PosterTest{len(made)}RouteSet', (base,), attrs)
         if files_visible is not None:
             monkeypatch.setattr(route_cls, 'files_visible', files_visible, raising=False)
         return route_cls
@@ -406,3 +411,126 @@ def test_the_guests_are_throttled_by_ip(sample_app, catalog, settings):
     for suffix in ('', 'download/'):
         url = f'{FILES}{catalog["photo"]}/{suffix}'
         assert [user.get(url).status_code for _ in range(3)] == [200, 200, 200], suffix
+
+
+def anonymous_throttles(route_cls) -> int:
+    dependencies = route_cls.routes_ctx['action_retrieve'].route_params.dependencies or ()
+    return sum(isinstance(getattr(it, 'dependency', None), AnonymousThrottle) for it in dependencies)
+
+
+def marker():
+    """A dependency a subclass declares on the item."""
+
+
+def test_a_subclass_keeps_the_dependencies_of_its_item(poster_route):
+    """
+    The item of a subclass of `FileUploadRouteSet` is public with one throttle of the
+    guests, and keeps the dependencies the subclass declares.
+    """
+    assert anonymous_throttles(FileUploadRouteSet) == 1
+    declaring = poster_route(
+        FileUploadRouteSet,
+        model=FileUpload,
+        action_retrieve=route_declare(
+            FileUploadRouteSet.action_retrieve, dependencies=[Depends(marker)]
+        ),
+    )
+    inheriting = poster_route(declaring, model=FileUpload)
+    for route_cls in (declaring, inheriting):
+        route = route_cls.routes_ctx['action_retrieve']
+        assert route.public is True
+        assert [it.dependency for it in route.route_params.dependencies][0] is marker
+        assert anonymous_throttles(route_cls) == 1
+
+
+def user_or_401(user=Depends(get_user_from_token)):
+    """A user required without `get_user_required`."""
+    if user is None:
+        raise HTTPException(status_code=401)
+    return user
+
+
+@inject_make()
+class InjectOwnUser:
+    user: object = Depends(user_or_401)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_a_failing_restrict_queryset_hides_only_its_files(
+    sample_app, catalog, poster_route, monkeypatch, caplog
+):
+    """
+    A route set that requires the user by a dependency of its own counts as serving
+    guests; its `restrict_queryset` (`owner=user`) fails for the anonymous user: its files
+    are 404 for a guest with a warning, the files of the other public route sets stay
+    public, its owner reads them as before.
+    """
+    from notes.routes import MemoRouteSet
+
+    def by_owner(cls, qs, access_action, user=None, **kwargs):
+        return qs.filter(owner=user)
+
+    broken = poster_route(
+        UserRouteBase,
+        files_visible=('attachment',),
+        model=Memo(),
+        InjectUser=InjectOwnUser,
+        restrict_queryset=classmethod(by_owner),
+    )
+    app = FastAPI()
+    app.include_router(sample_app.router)
+    app.include_router(broken.as_router())
+    monkeypatch.setattr('bazis.core.introspect.loaded_app', lambda: app)
+    files_visible_cache_clear()
+    assert route_serves_anonymous(broken) is True
+    assert route_serves_anonymous(MemoRouteSet) is False
+
+    bob = make_user('bob')
+    attachment = upload_id(client_of(sample_app, catalog['alice']), 'memo.txt', b'Memo.')
+    Memo().objects.create(title='Memo', owner=bob, attachment_id=attachment)
+    guest = client_of(sample_app)
+    name = f'tests.test_public_files.{broken.__qualname__}.restrict_queryset failed'
+    assert broken.__module__ == 'tests.test_public_files'
+    for suffix in ('', 'download/'):
+        caplog.clear()
+        with caplog.at_level('WARNING', logger='bazis.contrib.uploadable.routes'):
+            response = guest.get(f'{FILES}{attachment}/{suffix}')
+        missing = guest.get(f'{FILES}999999999/{suffix}')
+        assert (response.status_code, response.json()) == (404, missing.json()), suffix
+        warned = [it.levelname for it in caplog.records if name in it.getMessage()]
+        assert warned and set(warned) == {'WARNING'}, suffix
+        # the other public route sets still serve their files
+        assert guest.get(f'{FILES}{catalog["photo"]}/{suffix}').status_code == 200
+    assert client_of(sample_app, bob).get(f'{FILES}{attachment}/download/').content == b'Memo.'
+    # contract against execution: guests are said to read files through it
+    assert anonymous_files() is True
+
+    # the failure is not kept: a fixed rule shows the file on the next request
+    def owner_or_none(cls, qs, access_action, user=None, **kwargs):
+        return qs.filter(owner=user) if user.is_authenticated else qs.none()
+
+    monkeypatch.setattr(broken, 'restrict_queryset', classmethod(owner_or_none))
+    caplog.clear()
+    assert guest.get(f'{FILES}{attachment}/').status_code == 404
+    assert not [it for it in caplog.records if name in it.getMessage()]
+    monkeypatch.setattr(broken, 'restrict_queryset', classmethod(lambda cls, qs, *a, **k: qs))
+    assert guest.get(f'{FILES}{attachment}/').status_code == 200
+
+
+def test_anonymous_files_counts_a_failing_route_set(sample_app, poster_route, monkeypatch):
+    """
+    Only a route set whose `restrict_queryset` fails for guests serves them: the contract
+    says that they read files (a known difference with what they read).
+    """
+    broken = poster_route(
+        UserRouteBase,
+        files_visible=('attachment',),
+        model=Memo(),
+        InjectUser=InjectOwnUser,
+        restrict_queryset=classmethod(lambda cls, qs, *args, user=None, **kw: qs.filter(owner=user)),
+    )
+    app = app_of(broken)
+    monkeypatch.setattr('bazis.core.introspect.loaded_app', lambda: app)
+    files_visible_cache_clear()
+    assert anonymous_files() is True
+    assert files_public_q(FileUpload) is None

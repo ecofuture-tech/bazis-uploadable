@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 import unicodedata
 from functools import partial, reduce
@@ -55,6 +56,8 @@ from .models_abstract import anonymous_token
 from .signatures import HEAD_SIZE, SIGNATURES, signature_type
 from .storages import INLINE_CONTENT_TYPES, served_content_type
 
+
+logger = logging.getLogger(__name__)
 
 User = get_user_model()
 AnonymousUser = get_anonymous_user_model()
@@ -235,21 +238,42 @@ def anonymous_files() -> bool:
     )
 
 
-def _files_q(routes: list[tuple[type, tuple[str, ...]]], user) -> Q | None:
+def _files_q(
+    routes: list[tuple[type, tuple[str, ...]]], user, anonymous: bool = False
+) -> Q | None:
     """
     The files of the fields of `files_visible` of the objects each route set shows the
     user (its `restrict_queryset` for VIEW; all the objects if it does not restrict them).
     None without route sets.
+
+    `anonymous`: a route set whose `restrict_queryset` fails for the anonymous user (one
+    that requires the user by a dependency of its own and filters by him) shows no file;
+    the failure is logged as a warning (not kept: it is tried again on the next request)
+    and the other route sets still show theirs. Only the building of the querysets is
+    isolated: a failure when the database compiles the outer query is not (deliberately).
     """
     conditions = []
     for route_cls, names in routes:
-        objects = route_cls.model.objects.all()
-        if restrict := getattr(route_cls, 'restrict_queryset', None):
-            objects = restrict(objects, CrudAccessAction.VIEW, user=user)
-        for name in names:
-            conditions.append(
+        try:
+            objects = route_cls.model.objects.all()
+            if restrict := getattr(route_cls, 'restrict_queryset', None):
+                objects = restrict(objects, CrudAccessAction.VIEW, user=user)
+            route_conditions = [
                 Q(pk__in=objects.filter(**{f'{name}__isnull': False}).values(name))
+                for name in names
+            ]
+        except Exception as exc:
+            if not anonymous:
+                raise
+            logger.warning(
+                '%s.%s.restrict_queryset failed for an anonymous user, its files are not '
+                'public: %r',
+                route_cls.__module__,
+                route_cls.__qualname__,
+                exc,
             )
+            continue
+        conditions.extend(route_conditions)
     return reduce(or_, conditions) if conditions else None
 
 
@@ -269,10 +293,12 @@ def files_public_q(files_model: type[Model]) -> Q | None:
     `files_visible` of the objects each declaring route set that serves anonymous users
     (`route_serves_anonymous`) shows an anonymous user (its `restrict_queryset` for VIEW
     with an anonymous user of bazis-users; all the objects if it does not restrict them,
-    `uploadable.W003`). None if no such route set declares them.
+    `uploadable.W003`). None if no such route set declares them. A route set whose
+    `restrict_queryset` fails for the anonymous user shows no file (a warning in the log,
+    `_files_q`); the files of the others stay public.
     """
     routes = [it for it in files_visible_routes(files_model) if route_serves_anonymous(it[0])]
-    return _files_q(routes, AnonymousUser())
+    return _files_q(routes, AnonymousUser(), anonymous=True)
 
 
 class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
@@ -326,13 +352,20 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
         is 404 as one that does not exist; his requests are limited per IP address
         (`BAZIS_THROTTLE_PUBLIC`). Declared here, on the inherited route: declared in the
         class body it would be registered before `/_id/` and the schema routes, whose
-        paths its path matches.
+        paths its path matches. It is public whatever a subclass declares (a subclass
+        keeps guests out with its `restrict_queryset`); the dependencies it declares stay.
         """
         super().cls_init()
+        route = cls.routes_ctx['action_retrieve']
+        # the dependencies a subclass declares stay; the throttle is added once (the route
+        # params are copied for each class, so it is recognized by its type)
+        dependencies = list(route.route_params.dependencies or ())
+        if not any(
+            isinstance(getattr(it, 'dependency', None), AnonymousThrottle) for it in dependencies
+        ):
+            dependencies.append(Depends(AnonymousThrottle(public_rate, key='ip')))
         cls.action_retrieve = cls.routes_ctx['action_retrieve'] = route_declare(
-            cls.routes_ctx['action_retrieve'],
-            public=True,
-            dependencies=[Depends(AnonymousThrottle(public_rate, key='ip'))],
+            route, public=True, dependencies=dependencies
         )
 
     @http_post(
