@@ -428,6 +428,10 @@ def test_a_subclass_keeps_the_dependencies_of_its_item(poster_route):
     guests, and keeps the dependencies the subclass declares.
     """
     assert anonymous_throttles(FileUploadRouteSet) == 1
+    # The redeclaration in the class body is the pattern that keeps the dependency here
+    # but is not for applications: the route of the body is registered before `/_id/` and
+    # the schema routes and takes their paths (a core behavior, bazis 2.25+ plans a fix).
+    # Applications use `inject_make(CrudApiAction.RETRIEVE)` or `cls_init`.
     declaring = poster_route(
         FileUploadRouteSet,
         model=FileUpload,

@@ -159,6 +159,14 @@ class DocumentRouteSet(FileUploadRouteSet):
     model = apps.get_model('myapp.Document')
 ```
 
+The item (`GET /{id}/`) is public in every subclass. A subclass adds dependencies to it
+with `inject_make(CrudApiAction.RETRIEVE)` (a nested class of dependencies) or in its
+own `cls_init`, after `super().cls_init()`:
+`route_declare(cls.routes_ctx['action_retrieve'], dependencies=[...])`. Do not
+redeclare `action_retrieve` in the class body: the route of the body is registered first
+and its path `/{item_id}/` then takes `/_id/` and the schema routes (a behavior of the
+core, planned to be fixed in bazis 2.25+).
+
 ### Storage Configuration
 
 By default, Django's standard `FileSystemStorage` is used. You can configure custom storage via settings.

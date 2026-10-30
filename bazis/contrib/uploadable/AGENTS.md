@@ -154,7 +154,13 @@ class PosterRouteSet(RestrictedQsRouteMixin, UserRouteBase):   # the user is opt
   route set (it tells the declarations, not what its `restrict_queryset` returns).
 - The item of `FileUploadRouteSet` and its subclasses is always public (`cls_init`
   declares it over a `public` a subclass sets; the dependencies a subclass declares
-  stay): a subclass keeps guests out with its `restrict_queryset`.
+  stay): a subclass keeps guests out with its `restrict_queryset`. A subclass adds
+  dependencies to the item with `inject_make(CrudApiAction.RETRIEVE)` or in its own
+  `cls_init`, after `super().cls_init()`, with
+  `route_declare(cls.routes_ctx['action_retrieve'], dependencies=[...])`. Do not
+  redeclare `action_retrieve` in the class body: the route of the body is registered
+  first and its path `/{item_id}/` then takes `/_id/` and the schema routes (a behavior
+  of the core, planned to be fixed in bazis 2.25+).
 - A guest reads the item (`/{id}/`) and the download (`/{id}/download/`) of the route of
   the files and `included` of the public routes (`?include=photo`); never the list
   (401), never a link (`restrict_queryset` is empty for him with `link=True` and for any
