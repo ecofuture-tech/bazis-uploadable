@@ -58,3 +58,20 @@ class Board(JsonApiMixin):
     title = models.CharField(max_length=255)
     members = models.ManyToManyField(settings.AUTH_USER_MODEL, blank=True, related_name='+')
     files = models.ManyToManyField('uploadable.FileUpload', blank=True, related_name='+')
+
+
+class Poster(JsonApiMixin):
+    """
+    A poster of a public catalog: guests read the published posters and their photo
+    (`files_visible` of `PosterRouteSet`, which serves anonymous users); its scan is not
+    declared and stays private.
+    """
+
+    title = models.CharField(max_length=255)
+    published = models.BooleanField(default=False)
+    photo = models.ForeignKey(
+        'uploadable.FileUpload', blank=True, null=True, on_delete=models.SET_NULL, related_name='+'
+    )
+    scan = models.ForeignKey(
+        'uploadable.FileUpload', blank=True, null=True, on_delete=models.SET_NULL, related_name='+'
+    )

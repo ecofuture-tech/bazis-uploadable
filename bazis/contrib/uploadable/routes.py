@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 import unicodedata
 from functools import partial, reduce
@@ -26,14 +27,16 @@ from django.utils.http import content_disposition_header
 from django.utils.translation import gettext as _
 
 from fastapi import Depends, Form, HTTPException, Request
+from fastapi.routing import iter_route_contexts
 
 from starlette.responses import StreamingResponse
 
 from bazis.contrib.author.routes_abstract import AuthorRequiredRouteBase
+from bazis.contrib.users import get_anonymous_user_model, get_user_model
 from bazis.contrib.users.models_abstract import UserMixin
 from bazis.contrib.users.service import get_user_from_token, get_user_optional, get_user_required
 from bazis.core.errors import JsonApiBazisError, JsonApiBazisException
-from bazis.core.routes_abstract.initial import http_get, http_post
+from bazis.core.routes_abstract.initial import http_get, http_post, inject_make, route_declare
 from bazis.core.routes_abstract.jsonapi import (
     RestrictedQsRouteMixin,
     api_action_init,
@@ -45,7 +48,7 @@ from bazis.core.routes_abstract.jsonapi import (
 from bazis.core.routes_abstract.jsonapi.callbacks import JsonApiResponse
 from bazis.core.schemas import AccessAction, CrudAccessAction, CrudApiAction, SchemaFields
 from bazis.core.schemas.enums import RouteKind
-from bazis.core.throttle import Throttle
+from bazis.core.throttle import Throttle, public_rate
 from bazis.core.utils.django_types import UploadFileDjango
 from bazis.core.utils.functools import inheritors
 
@@ -53,6 +56,11 @@ from .models_abstract import anonymous_token
 from .signatures import HEAD_SIZE, SIGNATURES, signature_type
 from .storages import INLINE_CONTENT_TYPES, served_content_type
 
+
+logger = logging.getLogger(__name__)
+
+User = get_user_model()
+AnonymousUser = get_anonymous_user_model()
 
 #: the size of the chunks a download reads from the storage
 DOWNLOAD_CHUNK_SIZE = 64 * 1024
@@ -84,8 +92,8 @@ def anonymous_rate() -> str:
 
 class AnonymousThrottle(Throttle):
     """
-    A throttle that counts only the requests of anonymous users: the uploads of a user who is
-    logged in are not limited.
+    A throttle that counts only the requests of anonymous users: the uploads, reads and
+    downloads of a user who is logged in are not limited.
     """
 
     def check(self, request: Request, user=None, scope: str | None = None) -> None:
@@ -142,13 +150,17 @@ def files_visible_problem(route_cls) -> str | None:
 #: loaded (its routers have imported the route sets)
 _files_visible_cache: dict[type[Model], list[tuple[type, tuple[str, ...]]]] = {}
 
+#: `route_serves_anonymous` by route class, kept once the application is loaded
+_serves_anonymous_cache: dict[type, bool] = {}
+
 
 def files_visible_cache_clear() -> None:
     """
-    Forgets the declarations of `files_visible`: for a route set defined after the
-    application is loaded (a test).
+    Forgets the declarations of `files_visible` and which route sets serve anonymous
+    users: for a route set defined or registered after the application is loaded (a test).
     """
     _files_visible_cache.clear()
+    _serves_anonymous_cache.clear()
 
 
 def files_visible_routes(files_model: type[Model]) -> list[tuple[type, tuple[str, ...]]]:
@@ -178,6 +190,93 @@ def files_visible_routes(files_model: type[Model]) -> list[tuple[type, tuple[str
     return result
 
 
+def _requires_user(dependant) -> bool:
+    """Whether a FastAPI dependant depends, at any depth, on `get_user_required`."""
+    return any(
+        it.call is get_user_required or _requires_user(it) for it in dependant.dependencies
+    )
+
+
+def route_serves_anonymous(route_cls) -> bool:
+    """
+    Whether the application serves an item of the route class to an anonymous user: a
+    router registered its `action_retrieve`, and the dependencies FastAPI runs for it (of
+    the route and of the routers that include it) do not include `get_user_required`.
+    Not `auth_required`: a route set may require the user in a dependency of its own.
+    False for a route class no router registers, or before the application is loaded.
+    Kept once the application is loaded (`files_visible_cache_clear`).
+    """
+    from bazis.core.introspect import loaded_app
+
+    if (cached := _serves_anonymous_cache.get(route_cls)) is not None:
+        return cached
+    if (app := loaded_app()) is None:
+        return False
+    dependants = [
+        getattr(context, 'dependant', None)
+        for context in iter_route_contexts(app.router.routes)
+        if (route_ctx := getattr(context.endpoint, 'route_ctx', None)) is not None
+        and route_ctx.route_cls is route_cls
+        and route_ctx.name == 'action_retrieve'
+    ]
+    result = bool(dependants) and all(
+        it is not None and not _requires_user(it) for it in dependants
+    )
+    _serves_anonymous_cache[route_cls] = result
+    return result
+
+
+def anonymous_files() -> bool:
+    """
+    Whether anonymous users read some uploaded files: a route set that serves them
+    (`route_serves_anonymous`) declares `files_visible`. What a frontend contract exports
+    beside `anonymous_uploads`; which files they read is `files_public_q`.
+    """
+    return any(
+        not files_visible_problem(it) and route_serves_anonymous(it)
+        for it in files_visible_declarations()
+    )
+
+
+def _files_q(
+    routes: list[tuple[type, tuple[str, ...]]], user, anonymous: bool = False
+) -> Q | None:
+    """
+    The files of the fields of `files_visible` of the objects each route set shows the
+    user (its `restrict_queryset` for VIEW; all the objects if it does not restrict them).
+    None without route sets.
+
+    `anonymous`: a route set whose `restrict_queryset` fails for the anonymous user (one
+    that requires the user by a dependency of its own and filters by him) shows no file;
+    the failure is logged as a warning (not kept: it is tried again on the next request)
+    and the other route sets still show theirs. Only the building of the querysets is
+    isolated: a failure when the database compiles the outer query is not (deliberately).
+    """
+    conditions = []
+    for route_cls, names in routes:
+        try:
+            objects = route_cls.model.objects.all()
+            if restrict := getattr(route_cls, 'restrict_queryset', None):
+                objects = restrict(objects, CrudAccessAction.VIEW, user=user)
+            route_conditions = [
+                Q(pk__in=objects.filter(**{f'{name}__isnull': False}).values(name))
+                for name in names
+            ]
+        except Exception as exc:
+            if not anonymous:
+                raise
+            logger.warning(
+                '%s.%s.restrict_queryset failed for an anonymous user, its files are not '
+                'public: %r',
+                route_cls.__module__,
+                route_cls.__qualname__,
+                exc,
+            )
+            continue
+        conditions.extend(route_conditions)
+    return reduce(or_, conditions) if conditions else None
+
+
 def files_visible_q(files_model: type[Model], user) -> Q | None:
     """
     The files of `files_model` the user sees through the objects that reference them: the
@@ -185,26 +284,33 @@ def files_visible_q(files_model: type[Model], user) -> Q | None:
     the user (its `restrict_queryset` for VIEW; all the objects if it does not restrict
     them). None if no route set declares them.
     """
-    conditions = []
-    for route_cls, names in files_visible_routes(files_model):
-        objects = route_cls.model.objects.all()
-        if restrict := getattr(route_cls, 'restrict_queryset', None):
-            objects = restrict(objects, CrudAccessAction.VIEW, user=user)
-        for name in names:
-            conditions.append(
-                Q(pk__in=objects.filter(**{f'{name}__isnull': False}).values(name))
-            )
-    return reduce(or_, conditions) if conditions else None
+    return _files_q(files_visible_routes(files_model), user)
+
+
+def files_public_q(files_model: type[Model]) -> Q | None:
+    """
+    The files of `files_model` an anonymous user reads: the files of the fields of
+    `files_visible` of the objects each declaring route set that serves anonymous users
+    (`route_serves_anonymous`) shows an anonymous user (its `restrict_queryset` for VIEW
+    with an anonymous user of bazis-users; all the objects if it does not restrict them,
+    `uploadable.W003`). None if no such route set declares them. A route set whose
+    `restrict_queryset` fails for the anonymous user shows no file (a warning in the log,
+    `_files_q`); the files of the others stay public.
+    """
+    routes = [it for it in files_visible_routes(files_model) if route_serves_anonymous(it[0])]
+    return _files_q(routes, AnonymousUser(), anonymous=True)
 
 
 class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
     """
     The uploaded files of the user: a user who is logged in uploads a file (he becomes its
     `author`), lists, reads and downloads his own files and the files of the objects he
-    sees through a route set that declares them in `files_visible`. No file is changed or
-    deleted through the route. As the default route of the files, its `restrict_queryset`
-    is also what the other routes link and include (bazis 2.7): `included` shows the files
-    he sees, a relationship links only the files he uploaded (`link=True`, bazis 2.16).
+    sees through a route set that declares them in `files_visible`. An anonymous user
+    reads and downloads (not lists) the files of the objects a route set that serves him
+    shows him (`files_public_q`). No file is changed or deleted through the route. As the
+    default route of the files, its `restrict_queryset` is also what the other routes link
+    and include (bazis 2.7): `included` shows the files he sees, a relationship links only
+    the files he uploaded (`link=True`, bazis 2.16).
     """
 
     model = apps.get_model('uploadable.FileUpload')
@@ -228,6 +334,39 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
             exclude={'author': None, 'author_updated': None, 'uploaded_anonymously': None},
         )
     }
+
+    @inject_make(CrudApiAction.RETRIEVE)
+    class InjectRetrieveUser:
+        """
+        The item takes an anonymous user too (`cls_init`): the user of the routes of the
+        set is required (401) for the other routes.
+        """
+
+        user: User | AnonymousUser = Depends(get_user_optional)
+
+    @classmethod
+    def cls_init(cls):
+        """
+        The item (`action_retrieve`) is public: an anonymous user reads the files of the
+        objects the route sets that serve him show him (`restrict_queryset`), any other file
+        is 404 as one that does not exist; his requests are limited per IP address
+        (`BAZIS_THROTTLE_PUBLIC`). Declared here, on the inherited route: declared in the
+        class body it would be registered before `/_id/` and the schema routes, whose
+        paths its path matches. It is public whatever a subclass declares (a subclass
+        keeps guests out with its `restrict_queryset`); the dependencies it declares stay.
+        """
+        super().cls_init()
+        route = cls.routes_ctx['action_retrieve']
+        # the dependencies a subclass declares stay; the throttle is added once (the route
+        # params are copied for each class, so it is recognized by its type)
+        dependencies = list(route.route_params.dependencies or ())
+        if not any(
+            isinstance(getattr(it, 'dependency', None), AnonymousThrottle) for it in dependencies
+        ):
+            dependencies.append(Depends(AnonymousThrottle(public_rate, key='ip')))
+        cls.action_retrieve = cls.routes_ctx['action_retrieve'] = route_declare(
+            route, public=True, dependencies=dependencies
+        )
 
     @http_post(
         '/',
@@ -374,10 +513,19 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
         checks the linked objects: a visible file of another user is 422
         `ERR_RELATION_LINK`). Without a user (a route without a user, e.g. called by the
         core for the relationships of another route) the authenticated user of the request
-        (`UserMixin.authenticated_user`); none for an anonymous user.
+        (`UserMixin.authenticated_user`). An anonymous user (or none) only views, never
+        links, the files of the objects the route sets that serve him show him
+        (`files_public_q`): none for another action.
         """
         if (user := UserMixin.authenticated_user(user)) is None:
-            return qs.none()
+            if link or access_action != CrudAccessAction.VIEW:
+                return qs.none()
+            qs = super().restrict_queryset(
+                qs, access_action, user=AnonymousUser(), link=link, **kwargs
+            )
+            if (public := files_public_q(qs.model)) is None:
+                return qs.none()
+            return qs.filter(public)
         qs = super().restrict_queryset(qs, access_action, user=user, link=link, **kwargs)
         own = Q(author=user)
         if link or access_action != CrudAccessAction.VIEW:
@@ -389,15 +537,20 @@ class FileUploadRouteSet(RestrictedQsRouteMixin, AuthorRequiredRouteBase):
     @http_get(
         '/{item_id}/download/',
         kind=RouteKind.OTHER,
+        public=True,
+        dependencies=[Depends(AnonymousThrottle(public_rate, key='ip'))],
         response_class=StreamingResponse,
         responses={200: {'content': {'application/octet-stream': {}}, 'description': 'The file'}},
     )
-    def action_download(self, item_id: str, **kwargs):
+    def action_download(self, item_id: str, user=Depends(get_user_optional), **kwargs):
         """
         The content of a file the user sees (`get_queryset`: his own files and the visible
-        ones), read from the storage: 404 for another file or a file missing from the
-        storage. Served as the media host serves it (`storages`): a raster image inline,
-        any other file as a download named after the file, with `nosniff` and a sandbox.
+        ones; for an anonymous user the files of the public objects), read from the
+        storage: 404 for another file or a file missing from the storage. Served as the
+        media host serves it (`storages`): a raster image inline, any other file as a
+        download named after the file, with `nosniff` and a sandbox, never cached
+        (`private, no-store`). The requests of anonymous users are limited per IP address
+        (`BAZIS_THROTTLE_PUBLIC`).
         """
         item = self.set_item(item_id)
         try:

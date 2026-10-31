@@ -212,8 +212,9 @@ def test_a_guest_reads_no_file(sample_app, anonymous):
 
     assert guest.get(FILES).status_code == 401
     assert guest.get(f'{FILES}_id/').status_code == 401
-    assert guest.get(f'{FILES}{item}/').status_code == 401
-    assert guest.get(f'{FILES}{item}/download/').status_code == 401
+    # the item and the download are public (2.9): a file of no public object is 404
+    assert guest.get(f'{FILES}{item}/').status_code == 404
+    assert guest.get(f'{FILES}{item}/download/').status_code == 404
     # nor does a user: an anonymous upload is nobody's until an object references it
     user = client_of(sample_app, make_user('owner'))
     assert user.get(FILES).json()['data'] == []

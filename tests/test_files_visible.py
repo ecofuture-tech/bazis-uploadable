@@ -201,7 +201,8 @@ def test_download_checks_the_access(sample_app, media):
     text = upload_id(client, 'report.html', b'<script>alert(1)</script>')
     image = upload_id(client, 'photo.png', b'\x89PNG\r\n\x1a\n')
 
-    assert client_of(sample_app).get(f'{FILES}{text}/download/').status_code == 401
+    # the download is public (2.9): a file of no public object is 404, as a missing one
+    assert client_of(sample_app).get(f'{FILES}{text}/download/').status_code == 404
     assert client_of(sample_app, stranger).get(f'{FILES}{text}/download/').status_code == 404
     assert client.get(f'{FILES}0/download/').status_code == 404
 
@@ -287,7 +288,7 @@ def test_only_the_declaring_route_sets_count(sample_app, monkeypatch):
     A subclass of a declaring route set does not inherit `files_visible`; the declarations
     are resolved once the application is loaded.
     """
-    from notes.routes import BoardRouteSet, MemoRouteSet
+    from notes.routes import BoardRouteSet, MemoRouteSet, PosterRouteSet
 
     # a route class becomes the default route of its model: restore it
     monkeypatch.setattr(Memo(), '_default_route', Memo().get_default_route())
@@ -300,7 +301,11 @@ def test_only_the_declaring_route_sets_count(sample_app, monkeypatch):
     files_visible_cache_clear()
     declared = files_visible_routes(FileUpload)
     assert MemoArchiveRouteSet.files_visible == ('attachment',)
-    assert set(declared) == {(MemoRouteSet, ('attachment',)), (BoardRouteSet, ('files',))}
+    assert set(declared) == {
+        (MemoRouteSet, ('attachment',)),
+        (BoardRouteSet, ('files',)),
+        (PosterRouteSet, ('photo',)),
+    }
     assert files_visible_routes(FileUpload) is declared
     files_visible_cache_clear()
     assert files_visible_routes(FileUpload) is not declared

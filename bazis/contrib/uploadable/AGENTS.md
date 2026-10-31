@@ -15,10 +15,10 @@ photos) also Anonymous uploads.
 | Section | Read it when |
 |---|---|
 | Setup | you install it: the apps, the storage, the size limit, the router |
-| Access | you decide who reads and links the files: the own files, `files_visible` on the route sets of the objects, linking files to objects, a subclass with a rule of its own, bazis-permit |
+| Access | you decide who reads and links the files: the own files, `files_visible` on the route sets of the objects, the files of public objects for guests, linking files to objects, a subclass with a rule of its own, bazis-permit |
 | Upload | a client uploads a file: the multipart request and its response |
 | Anonymous uploads | guests upload files for a public action: the settings, what a guest reads, attaching the files in the action, the clean-up, the proxy |
-| Download | a client reads a file with its token: `/{id}/download/` and its headers |
+| Download | a client reads a file (with its token; a guest a public file): `/{id}/download/` and its headers |
 | Files the server generates | the server stores a file (a PDF, an export): `create_for`, a PDF with non-Latin text |
 | Serving | you deploy: the media host, the headers, S3, private files and the public media URL |
 | Models | a model of files of your own, the fields, a migration cycle with the user model, the storage paths |
@@ -47,22 +47,28 @@ photos) also Anonymous uploads.
 ## Access
 
 `FileUploadRouteSet` (`AuthorRequiredRouteBase` of bazis-author) requires a user (401
-without a token), except the upload when anonymous uploads are on (Anonymous uploads):
+without a token), except the upload when anonymous uploads are on (Anonymous uploads) and
+the item and the download, which serve a guest the files of public objects (2.9, below):
 
 - create: the user uploads a file and becomes its `author` (a client cannot set it);
 - list (`/`, `/_id/`), retrieve and download (`/{id}/download/`): the files whose `author`
   is the user and the files of the objects he sees through a route set that declares them
   in `files_visible` (below); another file is 404;
+- retrieve and download without a token: the files of public objects (below); another
+  file is 404, the same answer as a file that does not exist; the list, `/_id/`, the
+  schema routes and the upload (with anonymous uploads off) stay 401;
 - no update, no delete (405) and no relationships endpoints: a file referenced by the
   objects of other users stays as it was.
 
 `FileUploadRouteSet` is the default route of `uploadable.FileUpload`: its classmethod
-`restrict_queryset` (none for an anonymous user, the authenticated user of the request
+`restrict_queryset` (for an anonymous user the files of public objects to view, none to
+link or for another action; the authenticated user of the request
 `UserMixin.CTX_USER_REQUEST` when the caller passes no user) is also what the other
 routes link and include (the core, Bazis 2.7). `CTX_USER_REQUEST` is set by the routes of
 bazis-users (`UserRouteBase`) and its Django middleware: a route without a user (a plain
-`JsonapiRouteBase`) does not set it, so there a logged-in user is anonymous for the files,
-cannot link even his own files (403) and does not see them in `included`.
+`JsonapiRouteBase`) does not set it, so there a logged-in user is anonymous for the files:
+he sees only the files of public objects in `included` and cannot link even his own
+files (403).
 
 ### Files visible with the objects that reference them
 
@@ -84,7 +90,7 @@ class CertificateRouteSet(PermitRouteBase):
 - Several route sets (of the same or of other models) add up: a file is visible through
   any of them. The own files of the user stay visible.
 - Visible means the list, the item, the download of the route of the files and
-  `included` of the other routes. An anonymous user sees no file.
+  `included` of the other routes. A guest reads only the files of public objects (below).
 - The visibility follows the objects, not the rights to the field: when the user no
   longer sees the object, the file is 404 again; a field permission (bazis-permit) that
   hides the relation field of an object he sees does not hide its file. Declare only the
@@ -103,6 +109,76 @@ class CertificateRouteSet(PermitRouteBase):
 
 This replaces a subclass of `FileUploadRouteSet` that unions the `restrict_queryset` of
 several route sets.
+
+### Files of public objects (guests)
+
+A guest (no token) reads and downloads a file (2.9) if both hold:
+
+1. a route set that declares the field in `files_visible` serves its item to guests: a
+   router of the application registers its `action_retrieve`, and the dependencies
+   FastAPI runs for it do not include `get_user_required` (checked on the registered
+   route, not on `auth_required`). A route set of `UserRequiredRouteBase` never does; one
+   of `UserRouteBase` (or a plain `JsonapiRouteBase`) does; a route class no router
+   registers does not;
+2. the object that references the file is among the objects that route set shows a guest:
+   its `restrict_queryset(qs, view, user=<anonymous user of bazis-users>)`; all its
+   objects if it does not override `restrict_queryset`.
+
+```python
+class PosterRouteSet(RestrictedQsRouteMixin, UserRouteBase):   # the user is optional
+    model = apps.get_model('catalog.Poster')
+    files_visible = ('photo',)
+
+    @classmethod
+    def restrict_queryset(cls, qs, access_action, user=None, **kwargs):
+        qs = super().restrict_queryset(qs, access_action, user=user, **kwargs)
+        if UserMixin.authenticated_user(user) is None:
+            return qs.filter(published=True)            # what a guest sees
+        return qs
+```
+
+- Nothing else is declared: upgrading to 2.9 makes public the files of `files_visible`
+  of the route sets that already serve guests. `bazis_doctor` warns
+  (`uploadable.W003`) for such a route set without `restrict_queryset` of its own: the
+  files of all its objects are public. Restrict its objects for a guest (none if they are
+  private), require a user, or declare `permit_public = True` if all of them are public
+  (the convention of bazis-permit, `permit.W002`: read by its name, bazis-uploadable does
+  not depend on bazis-permit). With bazis-permit the roles for anonymous users decide
+  (`PermitRouteBase` overrides `restrict_queryset`).
+- A route set that requires the user by a dependency of its own (not `get_user_required`)
+  is public for the files: its `restrict_queryset` gets the anonymous user. If it fails
+  for him (e.g. `qs.filter(owner=user)`), its files are not public and a WARNING is
+  logged (`<module>.<class>.restrict_queryset failed for an anonymous user`); the files of
+  the other route sets stay public. Require the user with `get_user_required`, or return
+  `qs.none()` when `not user.is_authenticated`. `anonymous_files()` still counts such a
+  route set (it tells the declarations, not what its `restrict_queryset` returns).
+- The item of `FileUploadRouteSet` and its subclasses is always public (`cls_init`
+  declares it over a `public` a subclass sets; the dependencies a subclass declares
+  stay): a subclass keeps guests out with its `restrict_queryset`. A subclass adds
+  dependencies to the item with `inject_make(CrudApiAction.RETRIEVE)` or in its own
+  `cls_init`, after `super().cls_init()`, with
+  `route_declare(cls.routes_ctx['action_retrieve'], dependencies=[...])`. Do not
+  redeclare `action_retrieve` in the class body: the route of the body is registered
+  first and its path `/{item_id}/` then takes `/_id/` and the schema routes (a behavior
+  of the core, planned to be fixed in bazis 2.25+).
+- A guest reads the item (`/{id}/`) and the download (`/{id}/download/`) of the route of
+  the files and `included` of the public routes (`?include=photo`); never the list
+  (401), never a link (`restrict_queryset` is empty for him with `link=True` and for any
+  action but `view`). Any other file is 404, the same answer as a missing file.
+- His requests of the item and the download are limited by `BAZIS_THROTTLE_PUBLIC`
+  (default `30/minute`) per IP address and route, the users are not counted: raise it for
+  pages that show many files to guests. The download keeps `Cache-Control: private,
+  no-store`: every view is a request.
+- A logged-in user reads them as before, through `files_visible`; a plain `<img src>`
+  without a token is a guest request: it shows a public file only.
+- The bases after `FileUploadRouteSet` (bazis-permit) narrow the public files too: its
+  `restrict_queryset` calls theirs with the anonymous user. A subclass that returns
+  `qs.none()` for `user is None` itself keeps the files private for guests; one that
+  returns `super().restrict_queryset(...)` for him (the pattern below) shows them.
+- `route_serves_anonymous(route_cls)`, `files_public_q(model)` and `anonymous_files()`
+  (whether guests read some files: what a frontend contract exports beside
+  `anonymous_uploads()`) are in `bazis.contrib.uploadable.routes`; resolved once the
+  application is loaded, `files_visible_cache_clear()` forgets them (a test).
 
 ### Linking files to objects
 
@@ -205,9 +281,10 @@ by default; with it off the route is as before (401 without a token).
   attached; then `uploadable_clean_anonymous` deletes it unless something references it.
 - A guest reads back a token as the id (`anonymous_token`: the id of the file signed with
   the time by `SECRET_KEY`), `name`, `extension` and `size` (no `file`, the URL), and
-  reads no file afterwards: the list, the item and the download are 401 without a token,
-  and for the users an anonymous upload is nobody's (404) until an object references it
-  and `files_visible` shows it to the readers of that object. It has no `author` and
+  reads no file afterwards: the list is 401 without a token, the item and the download
+  404 (unless an object a guest sees references it: Files of public objects), and for
+  the users an anonymous upload is nobody's (404) until an object references it and
+  `files_visible` shows it to the readers of that object. It has no `author` and
   `uploaded_anonymously` is its time.
 - An invalid or expired bearer token is 401, not a guest; the token of a user who is no
   longer active (or deleted) is a guest when anonymous uploads are on.
@@ -290,13 +367,14 @@ may see what guests sent (the staff who process the requests).
 ## Download
 
 `GET <prefix>/uploadable/file_upload/{id}/download/` (a user, the bearer token) streams the
-content of a file the user sees (his own and the visible ones, as the item): 401 without a
-user, 404 for another file or a file missing from the storage. It is served as the media
+content of a file the user sees (his own and the visible ones, as the item); without a
+token the files of public objects (Access): 404 for another file or a file missing from
+the storage. It is served as the media
 host should serve it: the type of the stored name, a raster image inline, every other
 file `Content-Disposition: attachment` with the name of the file, `X-Content-Type-Options:
 nosniff`, `Content-Security-Policy: sandbox`, `Cache-Control: private, no-store`. A browser
 client fetches it with the token (not a plain `<a href>`/`<img src>`, which sends no
-token) and saves or shows the blob.
+token and reads only a public file) and saves or shows the blob.
 
 ## Files the server generates
 
@@ -427,3 +505,5 @@ scripts read its storage (the JWT in `localStorage`).
   (`uploadable_clean_anonymous` deletes both for the expired anonymous uploads).
 - Anonymous uploads: always with a size limit, a proxy body limit, the clean-up scheduled
   and `anonymous(tokens)` only for a guest (a user: his own files by id).
+- A route set that serves guests and declares `files_visible` makes public the files of
+  the objects its `restrict_queryset` gives a guest: restrict it (`uploadable.W003`).

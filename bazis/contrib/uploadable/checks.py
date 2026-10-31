@@ -16,7 +16,7 @@
 Django system checks of bazis-uploadable (see `manage.py bazis_doctor`).
 """
 
-from django.core.checks import Error, register
+from django.core.checks import Error, Warning, register
 
 
 def files_visible_errors(route_cls) -> list[str]:
@@ -97,3 +97,46 @@ def check_anonymous_uploads(app_configs, **kwargs):
             )
         ]
     return []
+
+
+@register()
+def check_public_files(app_configs, **kwargs):
+    """
+    A route set that serves anonymous users (`route_serves_anonymous`) and declares
+    `files_visible` without restricting its objects (no `restrict_queryset` of its own)
+    makes the files of all its objects public, guests read them (`uploadable.W003`),
+    unless it says that its objects are public (`permit_public = True`: the convention of
+    bazis-permit, `permit.W002`, read by its name without depending on bazis-permit). Runs
+    when the application is loaded.
+    """
+    from bazis.core.introspect import loaded_app
+
+    if loaded_app() is None:
+        return []
+
+    from bazis.core.routes_abstract.jsonapi.mixins import restrict_queryset_override
+
+    from .routes import files_visible_declarations, files_visible_problem, route_serves_anonymous
+
+    messages = []
+    for route_cls in files_visible_declarations():
+        if (
+            files_visible_problem(route_cls)
+            or not route_serves_anonymous(route_cls)
+            or restrict_queryset_override(route_cls) is not None
+            or getattr(route_cls, 'permit_public', False) is True
+        ):
+            continue
+        messages.append(
+            Warning(
+                f'{route_cls.__module__}.{route_cls.__qualname__} serves anonymous users and '
+                'does not restrict its objects: guests read the files of files_visible of '
+                'all its objects.',
+                hint='Override restrict_queryset to return the objects a guest may see (none '
+                'for an anonymous user if they are private), require a user, or declare '
+                'permit_public = True if all the objects and their files are public.',
+                obj=route_cls,
+                id='uploadable.W003',
+            )
+        )
+    return messages
